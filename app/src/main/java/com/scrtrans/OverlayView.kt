@@ -52,6 +52,15 @@ class OverlayView(context: Context) : View(context) {
 
         /** Breathing room either side of the glyphs. */
         private const val GLYPH_PAD = 4f
+
+        /**
+         * Debug: force an opaque backdrop, draw 1px rules at known absolute screen
+         * coordinates and outline every node box, so a screenshot can be measured
+         * against the bounds the tree reported. tools/measure.py reads the result.
+         */
+        const val DEBUG_GRID = false
+        private const val RULE_X = 500f
+        private const val RULE_Y = 1000f
     }
 
     /** A single item with its text size and line breaking already decided. */
@@ -162,7 +171,8 @@ class OverlayView(context: Context) : View(context) {
         return StaticLayout.Builder
             .obtain(text, 0, text.length, p, width.coerceAtLeast(1))
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setIncludePad(false)
+            // Matches the single-line path above and TextView's own default.
+            .setIncludePad(true)
             .build()
     }
 
@@ -178,8 +188,14 @@ class OverlayView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(-originOnScreen[0].toFloat(), -originOnScreen[1].toFloat())
 
+        if (DEBUG_GRID) {
+            fillPaint.color = Color.RED
+            canvas.drawRect(RULE_X, 0f, RULE_X + 1f, 4000f, fillPaint)
+            canvas.drawRect(0f, RULE_Y, 2000f, RULE_Y + 1f, fillPaint)
+        }
+
         for (p in prepared) {
-            fillPaint.color = NODE_BG
+            fillPaint.color = if (DEBUG_GRID) Color.WHITE else NODE_BG
             canvas.drawRect(p.bounds, fillPaint)
 
             fillPaint.color = GLYPH_BG
@@ -189,8 +205,12 @@ class OverlayView(context: Context) : View(context) {
 
             if (p.single != null) {
                 val fm = textPaint.fontMetrics
-                val lineH = fm.descent - fm.ascent
-                val baseline = p.bounds.top + (p.bounds.height() - lineH) / 2f - fm.ascent
+                // Centre on top..bottom, not ascent..descent. TextView defaults to
+                // includeFontPadding=true and uses the former, so centring the latter
+                // put our text (descent - ascent + |top| - bottom) / 2 ~ 0.075em high —
+                // a measured 3px at 36px, which reads as everything sitting subtly off.
+                val lineH = fm.bottom - fm.top
+                val baseline = p.bounds.top + (p.bounds.height() - lineH) / 2f - fm.top
                 val tw = textPaint.measureText(p.single)
 
                 canvas.drawRect(
@@ -224,6 +244,18 @@ class OverlayView(context: Context) : View(context) {
                 canvas.translate(left, top)
                 layout.draw(canvas)
                 canvas.restore()
+            }
+        }
+
+        // Outlines last so they sit on top of the fills and can be found in a screenshot.
+        if (DEBUG_GRID) {
+            fillPaint.color = Color.rgb(0, 160, 255)
+            for (p in prepared) {
+                val b = p.bounds
+                canvas.drawRect(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.top + 1f, fillPaint)
+                canvas.drawRect(b.left.toFloat(), b.bottom - 1f, b.right.toFloat(), b.bottom.toFloat(), fillPaint)
+                canvas.drawRect(b.left.toFloat(), b.top.toFloat(), b.left + 1f, b.bottom.toFloat(), fillPaint)
+                canvas.drawRect(b.right - 1f, b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat(), fillPaint)
             }
         }
 

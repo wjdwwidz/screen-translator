@@ -22,6 +22,11 @@ icon in the status bar, and less battery use.
 
 `tools/dev.sh install` does the build and the re-grant in one step.
 
+To check alignment, set `OverlayView.DEBUG_GRID = true`. It draws 1px rules at absolute
+(500, 1000), outlines every node box in cyan and forces an opaque backdrop.
+`python3 tools/measure.py shot.png` then reports, per box, where the ink sits relative to
+the box centre — which is how the 3px vertical offset below was found and confirmed fixed.
+
 Toolchain, pinned and verified on this machine:
 
 | | |
@@ -113,6 +118,12 @@ original spec, and each is commented at its definition in `OverlayView.kt`:
   and the Japanese is often centred, so the tail stayed legible — "미디엄ディアム".
 - **60px text ceiling.** The 検索 node is 144px tall around ~40px text, so 0.62 x height
   gave 89px type and a band thick enough to swallow the button's pink.
+- **Vertical centring uses fontMetrics top/bottom, not ascent/descent.** `TextView`
+  defaults to `includeFontPadding=true` and centres on top..bottom; centring on
+  ascent..descent put every string `(descent - ascent + |top| - bottom) / 2` ~ 0.075em
+  high — 3px at 36px, which reads as the whole overlay sitting subtly off. Measured with
+  `DEBUG_GRID` and `tools/measure.py`: our ink centre went from -0.4px to +2.1px against
+  the node centre, where the Japanese it replaces sits at +2.4px.
 - **Equal-height nodes share one text size.** Sizing each label on its own made siblings
   wildly uneven, because shrink-to-fit is driven by how long each translation happens to
   be while the Japanese it replaces was all one size: one list had "핸섬 숏" at 60px
