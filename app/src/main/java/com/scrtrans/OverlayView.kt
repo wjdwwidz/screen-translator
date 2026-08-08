@@ -19,17 +19,20 @@ class OverlayView(context: Context) : View(context) {
 
     companion object {
         /**
-         * The node's own area, opaque.
+         * The node's own area. 160/255 = 63%.
          *
-         * Two lighter versions came first and both leaked. A translucent wash left the
-         * source readable at 47%; covering only the text line left multi-line sources
-         * poking out above and below it — "ハイライトカ / 하이라이트 컬러 / ラー". Opaque
-         * over the whole node is the only variant where no Japanese survives anywhere,
-         * and the price is that the node's own colour goes with it.
+         * The alpha here trades two things against each other that share the one knob:
+         * lower lets the app's colours back through, and lets the Japanese back through
+         * with them. 120 (47%, the first value tried) left the source plainly readable
+         * wherever the Korean was shorter; 255 hid everything but turned the 検索 button
+         * and the selected tab into white boxes.
          */
-        private val NODE_BG = Color.rgb(255, 255, 255)
+        private val NODE_BG = Color.argb(160, 255, 255, 255)
 
-        /** Same white, behind the glyphs. Redundant while NODE_BG is opaque. */
+        /**
+         * Behind the glyphs, fully opaque — this is what keeps the Korean legible now
+         * that the node behind it is only partly covered.
+         */
         private val GLYPH_BG = Color.rgb(255, 255, 255)
 
         private val TEXT_DONE = Color.rgb(24, 24, 28)
