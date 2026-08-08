@@ -73,36 +73,75 @@ class OverlayView(context: Context) : View(context) {
     private val measurePaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
 
     fun setItems(items: List<RenderItem>) {
-        prepared = items.map { prepare(it) }
+        val size = FloatArray(items.size)
+        val oneLine = BooleanArray(items.size)
+        items.forEachIndexed { i, item ->
+            val (s, fits) = naturalSize(item)
+            size[i] = s
+            oneLine[i] = fits
+        }
+
+        // Sibling labels rendered at their own natural sizes come out wildly uneven —
+        // "핸섬 숏" large next to "보브 스타일링 헤어" small, because shrink-to-fit is
+        // driven by how long each translation happens to be, while the Japanese they
+        // replace was all one size. Nodes of equal height held equal-sized text, so
+        // group by height and drop the whole group to its smallest member.
+        //
+        // Only one-line items get a vote. An item that overflows even at the floor is a
+        // sentence, not a label, and would otherwise drag its whole group down with it.
+        val groupSize = HashMap<Int, Float>()
+        items.forEachIndexed { i, item ->
+            if (!oneLine[i]) return@forEachIndexed
+            val h = item.bounds.height()
+            val current = groupSize[h]
+            if (current == null || size[i] < current) groupSize[h] = size[i]
+        }
+
+        prepared = items.mapIndexed { i, item ->
+            val chosen = if (oneLine[i]) groupSize[item.bounds.height()] ?: size[i] else size[i]
+            prepare(item, chosen, oneLine[i])
+        }
+
+        if (items.isNotEmpty()) {
+            logd("sizes: " + items.mapIndexed { i, item ->
+                val chosen = if (oneLine[i]) groupSize[item.bounds.height()] ?: size[i] else size[i]
+                "\"${item.display}\" h=${item.bounds.height()} ${size[i].toInt()}->${chosen.toInt()}"
+            }.joinToString("; "))
+        }
+
         invalidate()
     }
 
     /**
-     * Start at 0.62 x box height and step down 1px at a time until the string fits
-     * the box width on one line. If it still will not fit at 14px the text is a long
-     * sentence, not a label — wrap it instead of shrinking into unreadability.
+     * Start at 0.62 x box height and step down 1px at a time until the string fits the
+     * box width on one line. Returns that size, and whether it actually fits — false
+     * means even 14px overflows, so the string wants wrapping rather than shrinking.
      */
-    private fun prepare(item: RenderItem): Prepared {
+    private fun naturalSize(item: RenderItem): Pair<Float, Boolean> {
         val w = item.bounds.width()
         val h = item.bounds.height()
-        val startSize = (h * HEIGHT_RATIO).coerceIn(MIN_TEXT_PX, MAX_TEXT_PX)
-
-        var size = startSize
+        var size = (h * HEIGHT_RATIO).coerceIn(MIN_TEXT_PX, MAX_TEXT_PX)
         while (size > MIN_TEXT_PX) {
             measurePaint.textSize = size
             if (measurePaint.measureText(item.display) <= w) break
             size -= 1f
         }
         measurePaint.textSize = size
-        if (measurePaint.measureText(item.display) <= w) {
+        return size to (measurePaint.measureText(item.display) <= w)
+    }
+
+    private fun prepare(item: RenderItem, size: Float, oneLine: Boolean): Prepared {
+        if (oneLine) {
             return Prepared(item.bounds, size, item.translated, item.display, null)
         }
 
         // Too long for one line even at the floor: wrap, and take the largest size
         // whose wrapped block still fits the original's box height.
+        val w = item.bounds.width()
+        val h = item.bounds.height()
         var best: StaticLayout? = null
         var bestSize = MIN_TEXT_PX
-        var s = startSize
+        var s = (h * HEIGHT_RATIO).coerceIn(MIN_TEXT_PX, MAX_TEXT_PX)
         while (s >= MIN_TEXT_PX) {
             val l = buildLayout(item.display, w, s)
             if (l.height <= h) {

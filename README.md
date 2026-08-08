@@ -93,7 +93,8 @@ round-trip) swap in without touching the drawing code. A synchronous
   tab underline still read through.
 - Behind the text: opaque white, full node width, over the line height.
 - Text: left aligned, `rgb(24,24,28)`, starting at 0.62 x box height, shrinking 1px at a
-  time until it fits, floor 14px, ceiling 60px.
+  time until it fits, floor 14px, ceiling 60px. Then every node of the same height is
+  dropped to the smallest size among them — see below.
 - Not yet translated: the source in `rgb(150,150,156)`.
 - No borders.
 
@@ -112,6 +113,13 @@ original spec, and each is commented at its definition in `OverlayView.kt`:
   and the Japanese is often centred, so the tail stayed legible — "미디엄ディアム".
 - **60px text ceiling.** The 検索 node is 144px tall around ~40px text, so 0.62 x height
   gave 89px type and a band thick enough to swallow the button's pink.
+- **Equal-height nodes share one text size.** Sizing each label on its own made siblings
+  wildly uneven, because shrink-to-fit is driven by how long each translation happens to
+  be while the Japanese it replaces was all one size: one list had "핸섬 숏" at 60px
+  beside "보브 스타일링 헤어" at 30px. Nodes of equal height held equal-sized text, so
+  they are grouped by height and the group takes its smallest member — that list is now
+  uniformly 30px. Items that overflow even at the 14px floor are excluded from the vote;
+  they are sentences, not labels, and would drag their group down with them.
 - **A multi-line source gets its whole node covered.** The message card's node is
   `[48,721][352,916]` — 195px around ~92px of text sitting against the bottom, not
   centred — so a centred band misses the second line. Costs the decorative icon inside
