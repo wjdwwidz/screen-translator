@@ -85,7 +85,7 @@ class TranslatorService : AccessibilityService() {
         overlay.show(
             lastItems.map { item ->
                 val ko = translator.translateOrNull(item.text)
-                RenderItem(ko ?: item.text, item.text, item.bounds, translated = ko != null)
+                RenderItem(ko ?: item.text, item.bounds, translated = ko != null)
             }
         )
     }

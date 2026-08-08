@@ -9,8 +9,6 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.View
-import kotlin.math.floor
-import kotlin.math.max
 
 /**
  * Draws translation boxes straight onto a Canvas. No child views, no layout pass:
@@ -20,19 +18,18 @@ import kotlin.math.max
 class OverlayView(context: Context) : View(context) {
 
     companion object {
-        /** Whole-node wash. Lets the app's own colours — button pink, tab underline — through. */
-        private val NODE_FILL = Color.argb(120, 255, 255, 255)
-
         /**
-         * Opaque band behind the text, spanning the node's full width.
+         * The node's own area, opaque.
          *
-         * Width-of-our-glyphs-only was the first attempt, on the theory that the two
-         * goals collide solely where our text lands. On a device that turned out false:
-         * Korean is usually shorter than the Japanese and the original is often centred,
-         * so the tail of the source stayed legible through the 47% wash — "미디엄ディアム".
-         * Full node width hides it; the untouched strips above and below keep the button
-         * pink and the tab underline visible.
+         * Two lighter versions came first and both leaked. A translucent wash left the
+         * source readable at 47%; covering only the text line left multi-line sources
+         * poking out above and below it — "ハイライトカ / 하이라이트 컬러 / ラー". Opaque
+         * over the whole node is the only variant where no Japanese survives anywhere,
+         * and the price is that the node's own colour goes with it.
          */
+        private val NODE_BG = Color.rgb(255, 255, 255)
+
+        /** Same white, behind the glyphs. Redundant while NODE_BG is opaque. */
         private val GLYPH_BG = Color.rgb(255, 255, 255)
 
         private val TEXT_DONE = Color.rgb(24, 24, 28)
@@ -45,22 +42,22 @@ class OverlayView(context: Context) : View(context) {
          * Box height is all we have to size text by — extraRenderingInfo.textSizeInPx
          * is null on every node here. It works for labels that hug their text, but a
          * padded button (the 検索 node is 144px tall around ~40px text) would get 89px
-         * type. That both looks wrong and makes the opaque band thick enough to swallow
-         * the button's pink. 60px ~ 20sp at this density, above any real UI label.
+         * type, which both looks wrong and drags an oversized white patch behind it.
+         * 60px ~ 20sp at this density, above any real UI label.
          */
         private const val MAX_TEXT_PX = 60f
+
+        /** Breathing room either side of the glyphs. */
         private const val GLYPH_PAD = 4f
     }
 
-    /** A single item with its text size, line breaking and cover height already decided. */
+    /** A single item with its text size and line breaking already decided. */
     private class Prepared(
         val bounds: Rect,
         val textSize: Float,
         val translated: Boolean,
         val single: String?,
         val layout: StaticLayout?,
-        /** Height of the opaque band, from how much of the node the Japanese occupies. */
-        val bandHeight: Float,
     )
 
     private var prepared: List<Prepared> = emptyList()
@@ -94,14 +91,8 @@ class OverlayView(context: Context) : View(context) {
             size -= 1f
         }
         measurePaint.textSize = size
-        val fitsOneLine = measurePaint.measureText(item.display) <= w
-
-        if (fitsOneLine) {
-            val lineH = measurePaint.fontMetrics.let { it.descent - it.ascent }
-            return Prepared(
-                item.bounds, size, item.translated, item.display, null,
-                bandHeight(item, w, h, size, lineH, ourLines = 1),
-            )
+        if (measurePaint.measureText(item.display) <= w) {
+            return Prepared(item.bounds, size, item.translated, item.display, null)
         }
 
         // Too long for one line even at the floor: wrap, and take the largest size
@@ -118,49 +109,10 @@ class OverlayView(context: Context) : View(context) {
             }
             s -= 1f
         }
-        val layout = best ?: buildLayout(item.display, w, MIN_TEXT_PX)
-        measurePaint.textSize = bestSize
-        val lineH = measurePaint.fontMetrics.let { it.descent - it.ascent }
         return Prepared(
-            item.bounds, bestSize, item.translated, null, layout,
-            max(
-                layout.height.toFloat() + GLYPH_PAD * 2,
-                bandHeight(item, w, h, bestSize, lineH, ourLines = layout.lineCount),
-            ),
+            item.bounds, bestSize, item.translated, null,
+            best ?: buildLayout(item.display, w, MIN_TEXT_PX),
         )
-    }
-
-    /**
-     * How tall the cover has to be.
-     *
-     * The Japanese may well occupy more lines than the Korean does — "サロンからの /
-     * メッセージ" takes two, "살롱에서 온 메시지" fits on one — and a one-line band leaves
-     * the original poking out above and below. Nothing reports the source's line count,
-     * so lay the source out at the size we chose and count. Laying it out rather than
-     * dividing width by width matters: several of these strings carry a literal \n,
-     * which measureText would happily ignore. Capped at what the node can actually
-     * hold, so a tall padded button still gets a one-line band and keeps its colour.
-     */
-    private fun bandHeight(
-        item: RenderItem,
-        w: Int,
-        h: Int,
-        size: Float,
-        lineH: Float,
-        ourLines: Int,
-    ): Float {
-        val srcLines = buildLayout(item.source, w, size).lineCount.coerceAtLeast(1)
-
-        // A multi-line source cannot be placed by guesswork. The message card's node is
-        // [48,721][352,916] — 195px tall around ~92px of text that sits against the
-        // bottom, not the middle — so a band centred in the node misses the second line.
-        // Cover the node outright instead. Nothing is lost: the nodes that need their
-        // colour showing through (buttons, tabs) are all single-line.
-        if (srcLines > 1) return h.toFloat()
-
-        val maxLines = max(1, floor(h / lineH).toInt())
-        val lines = max(ourLines, srcLines).coerceAtMost(maxLines)
-        return (lines * lineH + GLYPH_PAD * 2).coerceAtMost(h.toFloat())
     }
 
     private fun buildLayout(text: String, width: Int, size: Float): StaticLayout {
@@ -185,21 +137,10 @@ class OverlayView(context: Context) : View(context) {
         canvas.translate(-originOnScreen[0].toFloat(), -originOnScreen[1].toFloat())
 
         for (p in prepared) {
-            // (1) whole node area
-            fillPaint.color = NODE_FILL
+            fillPaint.color = NODE_BG
             canvas.drawRect(p.bounds, fillPaint)
 
-            // (2) opaque band, full node width, tall enough to bury the Japanese
-            val bandTop = p.bounds.top + (p.bounds.height() - p.bandHeight) / 2f
             fillPaint.color = GLYPH_BG
-            canvas.drawRect(
-                p.bounds.left.toFloat(),
-                bandTop,
-                p.bounds.right.toFloat(),
-                bandTop + p.bandHeight,
-                fillPaint,
-            )
-
             textPaint.textSize = p.textSize
             val textColor = if (p.translated) TEXT_DONE else TEXT_PENDING
             val left = p.bounds.left.toFloat()
@@ -208,11 +149,34 @@ class OverlayView(context: Context) : View(context) {
                 val fm = textPaint.fontMetrics
                 val lineH = fm.descent - fm.ascent
                 val baseline = p.bounds.top + (p.bounds.height() - lineH) / 2f - fm.ascent
+                val tw = textPaint.measureText(p.single)
+
+                canvas.drawRect(
+                    left - GLYPH_PAD,
+                    baseline + fm.ascent,
+                    left + tw + GLYPH_PAD,
+                    baseline + fm.descent,
+                    fillPaint,
+                )
                 textPaint.color = textColor
                 canvas.drawText(p.single, left, baseline, textPaint)
             } else {
                 val layout = p.layout!!
                 val top = p.bounds.top + (p.bounds.height() - layout.height) / 2f
+
+                for (i in 0 until layout.lineCount) {
+                    val lw = layout.getLineWidth(i)
+                    if (lw <= 0f) continue
+                    val lineLeft = left + layout.getLineLeft(i)
+                    canvas.drawRect(
+                        lineLeft - GLYPH_PAD,
+                        top + layout.getLineTop(i),
+                        lineLeft + lw + GLYPH_PAD,
+                        top + layout.getLineBottom(i),
+                        fillPaint,
+                    )
+                }
+
                 layout.paint.color = textColor
                 canvas.save()
                 canvas.translate(left, top)
