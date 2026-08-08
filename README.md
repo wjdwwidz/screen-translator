@@ -86,11 +86,49 @@ round-trip) swap in without touching the drawing code. A synchronous
 4. **Do not set `android:packageNames`.** Filtering there means never hearing about
    leaving the target app, so the last screen's boxes linger over whatever came next.
    Take every event; check `rootInActiveWindow.packageName` in `collect()` and clear.
-5. **Text size is unavailable.** `extraRenderingInfo?.textSizeInPx` was null on every
-   node. Box height is the only estimate.
+5. **`extraRenderingInfo?.textSizeInPx` is null on every node** — but that is not the
+   only way to ask. See "Where the Japanese actually is" below; the character-location
+   API answers for all but EditText hints, and box height is now only the fallback.
 6. **Colour is unavailable.** No background or text colour in the tree. Reading pixels
    would need MediaProjection, which puts a capture icon in the status bar permanently.
    Fixed colours instead.
+
+## Where the Japanese actually is
+
+A node's box is not where its text is. The 検索 button reports `[96,1365,984,1509]`
+while its label occupies `[497,1404,583,1470]` — centred, 401px in. A `drawableStart`
+icon pushes `エリア` 84px right of its box. Painting at `bounds.left` put our Korean on
+top of icons and 400px away from what it replaced.
+
+`AccessibilityNodeInfo.refreshWithExtraData(EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY, ...)`
+answers properly: it fills `extras` with one `RectF` per character, in screen
+coordinates — the same space as `getBoundsInScreen`, so no extra conversion. This is
+what screen readers use to highlight the word being spoken, and `TextView` implements it
+in the framework; the app did nothing to enable it. It is unrelated to
+`extraRenderingInfo`, which is null here.
+
+From those rects come the left edge past any icon, the line breaks, the source's line
+box height, and its exact vertical position. So:
+
+- Size is solved, not guessed. Font metrics scale linearly, so measuring our own line
+  height at 100px inverts the relation and gives the size whose lines match the source.
+- The baseline is pinned to the source's own line top. No centring rule is involved, and
+  the `includeFontPadding` correction below is only needed on the fallback path.
+- The opaque cover is the source's ink plus whatever our text needs, instead of the whole
+  node — which is why the search button keeps its pink and the tabs keep their fill.
+
+Two costs, both handled:
+
+- **EditText hints return nothing** (`髪型・カラーなど`, `指定なし`), since a hint is not
+  really text. Those fall back to estimating from the box, which still needs the
+  node-wide wash to hide a source it cannot locate.
+- **It is a synchronous call into the app**, 4-25ms a node; a screen of unseen strings
+  ran to 600ms, past the debounce, and the overlay trailed scrolling. Two things fix it.
+  Ink geometry is cached relative to the node box, which scrolling does not change, so
+  revisited text is free. And the debounced pass never probes at all — it draws from
+  cache and estimates — while a second pass 450ms after events stop fills in the rest.
+  A scroll now costs a tree walk (20-290ms, depending on how busy the app is) and
+  settles into exact placement shortly after it stops.
 
 ## Rendering
 

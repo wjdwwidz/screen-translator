@@ -13,6 +13,13 @@ class TranslatorService : AccessibilityService() {
         /** Without this the tree gets re-walked dozens of times a second while scrolling. */
         private const val DEBOUNCE_MS = 300L
 
+        /**
+         * Asking the app where each character sits costs ~450ms for a screen of unseen
+         * strings, so the debounced pass never does it. This second pass, which only
+         * runs once events stop, fills in what the cache could not answer.
+         */
+        private const val SETTLE_MS = 450L
+
         @Volatile
         var running: Boolean = false
             private set
@@ -22,7 +29,8 @@ class TranslatorService : AccessibilityService() {
     private lateinit var translator: TextTranslator
 
     private val handler = Handler(Looper.getMainLooper())
-    private val collectTask = Runnable { collect() }
+    private val collectTask = Runnable { collect(probe = false) }
+    private val settleTask = Runnable { collect(probe = true) }
 
     private var screenW = 0
     private var screenH = 0
@@ -56,10 +64,11 @@ class TranslatorService : AccessibilityService() {
     // would sit there over whatever came next.
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         handler.removeCallbacks(collectTask)
+        handler.removeCallbacks(settleTask)
         handler.postDelayed(collectTask, DEBOUNCE_MS)
     }
 
-    private fun collect() {
+    private fun collect(probe: Boolean) {
         val root = rootInActiveWindow
         val pkg = root?.packageName?.toString()
 
@@ -74,9 +83,19 @@ class TranslatorService : AccessibilityService() {
         }
         lastWasTarget = true
 
-        lastItems = TextCollector.collect(root, screenW, screenH)
-        logi("collected ${lastItems.size} items")
+        val t0 = System.nanoTime()
+        lastItems = TextCollector.collect(root, screenW, screenH, probe)
+        val ms = (System.nanoTime() - t0) / 1_000_000.0
+        val located = lastItems.count { it.hasInk }
+        logi("collected ${lastItems.size} items, $located located, probe=$probe (${"%.0f".format(ms)}ms)")
         render()
+
+        // Anything still unlocated is either waiting on the settle pass or is text the
+        // API will not describe. Either way, one more attempt once the screen is quiet.
+        if (!probe && located < lastItems.size) {
+            handler.removeCallbacks(settleTask)
+            handler.postDelayed(settleTask, SETTLE_MS)
+        }
     }
 
     /** Re-maps the current items through the translator. Cheap: it is a cache lookup. */
@@ -85,7 +104,10 @@ class TranslatorService : AccessibilityService() {
         overlay.show(
             lastItems.map { item ->
                 val ko = translator.translateOrNull(item.text)
-                RenderItem(ko ?: item.text, item.bounds, translated = ko != null)
+                RenderItem(
+                    ko ?: item.text, item.bounds, ko != null,
+                    item.inkLines, item.sourceLineHeight,
+                )
             }
         )
     }
@@ -95,6 +117,7 @@ class TranslatorService : AccessibilityService() {
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         running = false
         handler.removeCallbacks(collectTask)
+        handler.removeCallbacks(settleTask)
         overlay.detach()
         translator.close()
         logi("service unbound")
