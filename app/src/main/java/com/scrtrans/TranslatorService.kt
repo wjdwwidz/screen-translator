@@ -19,19 +19,32 @@ class TranslatorService : AccessibilityService() {
     }
 
     private lateinit var overlay: OverlayManager
+    private lateinit var translator: TextTranslator
+
     private val handler = Handler(Looper.getMainLooper())
     private val collectTask = Runnable { collect() }
 
     private var screenW = 0
     private var screenH = 0
     private var lastWasTarget = false
+    private var lastItems: List<TextItem> = emptyList()
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         overlay = OverlayManager(this)
         overlay.attach()
-        running = true
+        TranslationLog.init(this)
 
+        // Cache/dedup on the outside, glossary short-circuit next, engine at the bottom.
+        translator = CachingTranslator(GlossaryEngine(MlKitEngine())) {
+            handler.post { render() }
+        }
+        translator.warmUp { ok ->
+            logi("translator ready=$ok (glossary ${Glossary.verifiedCount} verified + ${Glossary.guessedCount} guessed)")
+            render()
+        }
+
+        running = true
         val m = resources.displayMetrics
         screenW = m.widthPixels
         screenH = m.heightPixels
@@ -52,6 +65,7 @@ class TranslatorService : AccessibilityService() {
 
         if (root == null || pkg != TARGET_PACKAGE) {
             if (lastWasTarget) {
+                lastItems = emptyList()
                 overlay.clear()
                 lastWasTarget = false
                 logi("left target (now=$pkg), overlay cleared")
@@ -60,11 +74,20 @@ class TranslatorService : AccessibilityService() {
         }
         lastWasTarget = true
 
-        val items = TextCollector.collect(root, screenW, screenH)
-        logi("collected ${items.size} items")
-        // No engine yet: redraw the source where it already is, which is what proves
-        // the geometry. Adding translation first would mix up the causes of any error.
-        overlay.show(items.map { RenderItem(it.text, it.text, it.bounds, translated = false) })
+        lastItems = TextCollector.collect(root, screenW, screenH)
+        logi("collected ${lastItems.size} items")
+        render()
+    }
+
+    /** Re-maps the current items through the translator. Cheap: it is a cache lookup. */
+    private fun render() {
+        if (!lastWasTarget) return
+        overlay.show(
+            lastItems.map { item ->
+                val ko = translator.translateOrNull(item.text)
+                RenderItem(ko ?: item.text, item.text, item.bounds, translated = ko != null)
+            }
+        )
     }
 
     override fun onInterrupt() {}
@@ -73,6 +96,7 @@ class TranslatorService : AccessibilityService() {
         running = false
         handler.removeCallbacks(collectTask)
         overlay.detach()
+        translator.close()
         logi("service unbound")
         return super.onUnbind(intent)
     }
