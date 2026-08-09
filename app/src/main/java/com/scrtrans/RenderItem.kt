@@ -10,8 +10,10 @@ import android.graphics.Rect
  */
 data class RenderItem(
     val display: String,
-    /** The Japanese underneath. Needed to work out how much of the node it covers. */
-    val source: String,
     val bounds: Rect,
     val translated: Boolean,
-)
+    val inkLines: List<Rect> = emptyList(),
+    val sourceLineHeight: Float = 0f,
+) {
+    val hasInk get() = inkLines.isNotEmpty() && sourceLineHeight > 0f
+}
