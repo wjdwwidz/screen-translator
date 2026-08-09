@@ -34,5 +34,6 @@ kotlin {
 }
 
 dependencies {
-    // Deliberately empty. Nothing here needs AndroidX, Material or Compose.
+    // The only dependency. On-device ja->ko.
+    implementation("com.google.mlkit:translate:17.0.3")
 }
