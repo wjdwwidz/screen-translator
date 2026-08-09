@@ -90,6 +90,13 @@ class TranslatorService : AccessibilityService() {
         logi("collected ${lastItems.size} items, $located located, probe=$probe (${"%.0f".format(ms)}ms)")
         render()
 
+        if (probe && ColorProbe.ENABLED) {
+            ColorProbe.captureAndSample(
+                this,
+                lastItems.filter { it.hasInk }.take(6).map { it.text to it.inkLines.first() },
+            )
+        }
+
         // Anything still unlocated is either waiting on the settle pass or is text the
         // API will not describe. Either way, one more attempt once the screen is quiet.
         if (!probe && located < lastItems.size) {

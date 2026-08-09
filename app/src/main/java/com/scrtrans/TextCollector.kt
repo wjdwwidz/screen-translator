@@ -59,6 +59,7 @@ object TextCollector {
                     // its wrapper both carrying text); drawing it twice just darkens it.
                     val key = "$text@${r.left},${r.top},${r.right},${r.bottom}"
                     if (seen.add(key)) {
+                        if (probe && ColorProbe.ENABLED) ColorProbe.inspectNode(node, text)
                         val geom = inkGeom(node, text, r, screenW, screenH, probe)
                         val lines = geom?.lines?.map {
                             Rect(it.left + r.left, it.top + r.top, it.right + r.left, it.bottom + r.top)
