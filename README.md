@@ -1,212 +1,217 @@
 # screen-translator
 
-Draws Korean over the Japanese in Hot Pepper Beauty (`jp.hotpepper.android.beauty.hair`).
+핫페퍼 뷰티(`jp.hotpepper.android.beauty.hair`)의 일본어 화면 위에 한국어를 겹쳐 그립니다.
 
-Android cannot edit another app's text — process isolation makes the accessibility API
-read-only, so there is no DOM-swap equivalent. Drawing on top is the only route, which
-means we redo the layout and colour matching ourselves.
+안드로이드는 다른 앱의 텍스트를 바꿀 수 없습니다. 프로세스가 격리돼 있어 접근성 API가
+읽기 전용이고, 크롬이 웹페이지를 번역할 때처럼 DOM을 갈아끼우는 건 불가능합니다. 그래서
+"위에 덮어 그리기"가 유일한 방법이고, 레이아웃 재계산과 색 맞추기를 직접 해야 합니다.
 
-Text and coordinates come from the accessibility tree, not OCR and not screen capture:
-the target app is pure native (0 `WebView`, 18 `TextView` on the home screen), every
-Japanese string is in `text=` with exact `bounds=`. That gives exact strings, no capture
-icon in the status bar, and less battery use.
+문자열과 좌표는 OCR도 화면 캡쳐도 아닌 **접근성 트리**에서 가져옵니다. 대상 앱이 순수
+네이티브라(홈 화면 기준 `WebView` 0개, `TextView` 18개) 모든 일본어가 `text=` 속성에 있고
+`bounds=`로 정확한 좌표까지 나옵니다. 덕분에 정확도가 100%이고, 상태바에 화면 캡쳐 아이콘이
+뜨지 않으며, 배터리에도 유리합니다.
 
-## Build
+## 빌드
 
 ```bash
-./gradlew installDebug          # builds, installs; no separate adb install
-./tools/dev.sh enable           # re-grant accessibility (a reinstall always revokes it)
+./gradlew installDebug          # 빌드 + 설치. adb install 따로 안 해도 됨
+./tools/dev.sh enable           # 접근성 재허용 (재설치하면 항상 꺼짐)
 ./tools/dev.sh log              # adb logcat -s ScrTrans
-./tools/dev.sh shot out.png     # screencap with an explicit display id
+./tools/dev.sh shot out.png     # 디스플레이 ID를 명시한 screencap
 ```
 
-`tools/dev.sh install` does the build and the re-grant in one step.
+`tools/dev.sh install`이 빌드와 재허용을 한 번에 합니다.
 
-To check alignment, set `OverlayView.DEBUG_GRID = true`. It draws 1px rules at absolute
-(500, 1000), outlines every node box in cyan and forces an opaque backdrop.
-`python3 tools/measure.py shot.png` then reports, per box, where the ink sits relative to
-the box centre — which is how the 3px vertical offset below was found and confirmed fixed.
+재설치 후 설정만 다시 켜도 프로세스가 안 살아나는 경우가 있습니다. 로그가 전혀 안 찍히면
+`adb shell am force-stop com.scrtrans` 후 다시 켜세요.
 
-Toolchain, pinned and verified on this machine:
+정렬을 확인하려면 `OverlayView.DEBUG_GRID = true`로 두세요. 절대좌표 (500, 1000)에 1px 자를
+긋고, 모든 노드 박스를 청록색으로 두르고, 배경을 불투명으로 강제합니다. 그 스크린샷을
+`python3 tools/measure.py shot.png`에 넣으면 박스별로 글자 잉크가 박스 중심에서 얼마나
+벗어났는지 숫자로 나옵니다. 아래 3px 세로 오차를 찾고 수정을 확인한 방법입니다.
+
+이 기기에서 검증된 툴체인:
 
 | | |
 |---|---|
-| JDK | 21.0.5 (`brew install openjdk@21`, keg-only; pinned in `gradle.properties` via `org.gradle.java.home` so the global `java` is untouched) |
+| JDK | 21.0.5 (`brew install openjdk@21`, keg-only. `gradle.properties`의 `org.gradle.java.home`에 박아서 전역 `java`를 안 건드림) |
 | SDK | `/opt/homebrew/share/android-commandlinetools`, `platforms;android-36`, `build-tools;36.0.0` |
 | AGP / Kotlin / Gradle | 8.13.2 / 2.3.21 / 8.14.5 |
 | compile/target/min SDK | 36 / 36 / 30 |
-| dependency | `com.google.mlkit:translate:17.0.3` — the only one |
+| 의존성 | `com.google.mlkit:translate:17.0.3` — 이것 하나뿐 |
 
-No AndroidX, Material or Compose in our own code, and no XML layouts: `MainActivity` is a
-plain `android.app.Activity` assembling views in code. Without an IDE preview, XML costs a
-dependency tree and buys nothing.
+우리 코드에는 AndroidX·Material·Compose가 없고 XML 레이아웃도 없습니다. `MainActivity`는
+순수 `android.app.Activity`에 코드로 뷰를 조립합니다. IDE 프리뷰가 없으면 XML은 의존성만
+늘리고 얻는 게 없습니다.
 
-ML Kit needs network **once**, to download the ja and ko models. Glossary terms resolve
-offline regardless.
+ML Kit은 ja/ko 모델을 받으려고 **최초 1회** 네트워크가 필요합니다. 용어집 항목은 그와
+무관하게 오프라인에서 동작합니다.
 
-## Shape
+## 구조
 
 ```
 TranslatorService (AccessibilityService)
-  300ms debounce -> walk tree -> text + getBoundsInScreen
-  drop strings with no kana/kanji ("10", "¥5,500", "OPEN")
-  not the target package -> clear the overlay
+  300ms 디바운스 → 트리 순회 → text + getBoundsInScreen
+  가나·한자가 없는 문자열은 제외 ("10", "¥5,500", "OPEN")
+  대상 패키지가 아니면 오버레이 비움
 
 CachingTranslator( GlossaryEngine( MlKitEngine() ) )
-  CachingTranslator  cache, in-flight dedup, synchronous lookup. Engine-independent,
-                     so it lives here and nowhere else.
-  GlossaryEngine     exact-match hit skips the engine entirely
-  MlKitEngine        ja -> ko, on device
+  CachingTranslator  캐시, 중복요청 제거, 동기 조회. 엔진과 무관하므로 여기 한 곳에만
+  GlossaryEngine     완전일치면 엔진 호출 자체를 건너뜀
+  MlKitEngine        ja → ko, 온디바이스
 
-OverlayManager   window lifecycle
-OverlayView      Canvas drawing, no layout system (coordinates are already absolute)
-TranslationLog   source/result pairs as JSONL
+OverlayManager   창 생명주기
+OverlayView      Canvas 직접 그리기. 레이아웃 시스템 안 씀 (좌표가 이미 절대값)
+TranslationLog   원문/결과 쌍을 JSONL로 기록
 ```
 
-`TextTranslator` and `TranslationEngine` are separate on purpose. `onDraw` needs a string
-now; translation is async. `translateOrNull` returns null, the source gets drawn, and the
-result callback triggers a redraw. That shape is what lets a 0ms local engine and a
-several-hundred-ms network engine (DeepL, which does ja→ko directly and skips the English
-round-trip) swap in without touching the drawing code. A synchronous
-`translate(text): String` would rule the network engine out.
+`TextTranslator`와 `TranslationEngine`을 나눈 건 의도적입니다. `onDraw`는 지금 당장 문자열이
+필요한데 번역은 비동기입니다. `translateOrNull`이 null을 주면 원문을 그리고, 결과가 도착하면
+콜백이 다시 그립니다. 이 모양이라야 0ms 로컬 엔진이든 수백 ms 네트워크 엔진이든 그리기 코드를
+안 건드리고 갈아끼울 수 있습니다. DeepL이 유력한 교체 후보인데, ja→ko를 직접 번역해서 영어
+경유 손실이 없기 때문입니다. `translate(text): String` 같은 동기 반환형이었다면 네트워크
+엔진은 아예 못 끼웁니다.
 
-## Things that bite
+## 반드시 지켜야 할 것
 
-1. **`TYPE_ACCESSIBILITY_OVERLAY`, never `TYPE_APPLICATION_OVERLAY`.** No
-   SYSTEM_ALERT_WINDOW permission needed, and the window is excluded from the
-   accessibility tree — otherwise we read back our own Korean and loop. Verified: while
-   the Korean overlay is on screen, `uiautomator dump` finds 0 Hangul nodes.
-2. **Touch pass-through** — `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE | FLAG_LAYOUT_IN_SCREEN
-   | FLAG_LAYOUT_NO_LIMITS`, plus `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`.
-3. **Coordinates sit low by the status bar height.** `getBoundsInScreen()` is absolute to
-   the display; the overlay window starts below the status bar (109px here). The flags
-   above do not remove the inset. `OverlayView.onDraw` calls `getLocationOnScreen` and
-   translates the canvas by the negative of it — measured every frame, so it holds on any
-   device or OS version.
-4. **Do not set `android:packageNames`.** Filtering there means never hearing about
-   leaving the target app, so the last screen's boxes linger over whatever came next.
-   Take every event; check `rootInActiveWindow.packageName` in `collect()` and clear.
-5. **`extraRenderingInfo?.textSizeInPx` is null on every node** — but that is not the
-   only way to ask. See "Where the Japanese actually is" below; the character-location
-   API answers for all but EditText hints, and box height is now only the fallback.
-6. **Colour is unavailable.** No background or text colour in the tree. Reading pixels
-   would need MediaProjection, which puts a capture icon in the status bar permanently.
-   Fixed colours instead.
+1. **`TYPE_ACCESSIBILITY_OVERLAY`, 절대 `TYPE_APPLICATION_OVERLAY` 아님.**
+   SYSTEM_ALERT_WINDOW("다른 앱 위에 표시") 권한이 필요 없고, 이 창은 접근성 트리에서
+   제외됩니다. 안 그러면 우리가 그린 한국어를 우리 서비스가 다시 읽어 무한 루프가 돕니다.
+   실측 확인: 한국어 오버레이가 떠 있는 상태에서 `uiautomator dump`에 한글 노드 0개.
+2. **터치 통과** — `FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCHABLE | FLAG_LAYOUT_IN_SCREEN |
+   FLAG_LAYOUT_NO_LIMITS`, 그리고 `LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`.
+3. **좌표가 상태바 높이만큼 밀립니다.** `getBoundsInScreen()`은 화면 절대좌표인데 오버레이
+   창은 상태바 아래에서 시작합니다(이 기기 109px). 위 플래그를 다 줘도 인셋이 남습니다.
+   `OverlayView.onDraw`에서 `getLocationOnScreen`으로 창 위치를 재고 캔버스를 그만큼 음수로
+   이동시킵니다. 매 프레임 다시 재므로 기기·OS가 달라도 항상 맞습니다.
+4. **`android:packageNames`로 대상 앱을 제한하지 마세요.** 거기서 거르면 대상 앱을 벗어난
+   사실을 알 방법이 없어, 직전 화면의 박스가 엉뚱한 자리에 남습니다. 이벤트는 전부 받고
+   `collect()`에서 `rootInActiveWindow.packageName`을 확인해 아니면 비웁니다. 읽고 기록하는
+   건 대상 패키지 하나뿐입니다.
+5. **`extraRenderingInfo?.textSizeInPx`는 모든 노드에서 null입니다** — 하지만 물어보는 방법이
+   그것만은 아닙니다. 아래 "원문이 실제로 있는 위치"를 보세요. 글자별 좌표 API는 EditText
+   힌트를 뺀 전부에 답하고, 박스 높이 추정은 이제 폴백일 뿐입니다.
+6. **색상 정보는 없습니다.** 접근성 트리에 배경색·글자색 필드가 없습니다. 픽셀을 보려면
+   MediaProjection이 필요하다고 알려져 있지만, API 30부터는 `AccessibilityService`
+   자체에 `takeScreenshot`이 있습니다. `ColorProbe`에 조사 코드가 있고 아직 미결입니다.
 
-## Where the Japanese actually is
+## 원문이 실제로 있는 위치
 
-A node's box is not where its text is. The 検索 button reports `[96,1365,984,1509]`
-while its label occupies `[497,1404,583,1470]` — centred, 401px in. A `drawableStart`
-icon pushes `エリア` 84px right of its box. Painting at `bounds.left` put our Korean on
-top of icons and 400px away from what it replaced.
+노드 박스는 글자가 있는 자리가 아닙니다. `検索` 버튼은 `[96,1365,984,1509]`로 보고되는데
+라벨은 `[497,1404,583,1470]`에 있습니다. 가운데 정렬이라 401px 안쪽입니다. `drawableStart`
+아이콘은 `エリア`를 박스보다 84px 오른쪽으로 밉니다. `bounds.left`에 그리면 한국어가 아이콘
+위에 얹히고 원문에서 400px 떨어진 곳에 놓입니다.
 
-`AccessibilityNodeInfo.refreshWithExtraData(EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY, ...)`
-answers properly: it fills `extras` with one `RectF` per character, in screen
-coordinates — the same space as `getBoundsInScreen`, so no extra conversion. This is
-what screen readers use to highlight the word being spoken, and `TextView` implements it
-in the framework; the app did nothing to enable it. It is unrelated to
-`extraRenderingInfo`, which is null here.
+`AccessibilityNodeInfo.refreshWithExtraData(EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY, ...)`가
+제대로 답합니다. `extras`에 **글자 하나당 `RectF` 하나**를 채워주고, 좌표계는 화면 절대좌표라
+`getBoundsInScreen`과 같은 공간이어서 별도 변환이 필요 없습니다. 화면 리더가 읽고 있는 단어에
+하이라이트를 그릴 때 쓰는 API이고, `TextView`가 프레임워크 차원에서 구현합니다. 앱이 뭘
+해준 게 아닙니다. null이었던 `extraRenderingInfo`와는 완전히 다른 API입니다.
 
-From those rects come the left edge past any icon, the line breaks, the source's line
-box height, and its exact vertical position. So:
+이 사각형들에서 아이콘 뒤 왼쪽 끝, 줄 나눔, 원문의 라인 박스 높이, 정확한 세로 위치가
+전부 나옵니다. 그래서:
 
-- Size is solved, not guessed. Font metrics scale linearly, so measuring our own line
-  height at 100px inverts the relation and gives the size whose lines match the source.
-- The baseline is pinned to the source's own line top. No centring rule is involved, and
-  the `includeFontPadding` correction below is only needed on the fallback path.
-- The opaque cover is the source's ink plus whatever our text needs, instead of the whole
-  node — which is why the search button keeps its pink and the tabs keep their fill.
+- **크기는 추정이 아니라 계산입니다.** 폰트 메트릭은 크기에 선형이므로, 우리 Paint의
+  라인 높이를 100px에서 한 번 재고 비례식을 뒤집으면 원문과 줄 높이가 같아지는 크기가 나옵니다.
+- **베이스라인은 원문의 줄 상단에 고정합니다.** 가운데 정렬 규칙 자체가 개입하지 않습니다.
+  아래의 `includeFontPadding` 보정은 폴백 경로에만 필요합니다.
+- **불투명하게 덮는 범위가 원문 잉크 + 우리 글자만큼**으로 줄었습니다. 노드 전체가 아니라서
+  검색 버튼은 분홍색을, 탭은 배경을 그대로 유지합니다.
 
-Two costs, both handled:
+대가는 두 가지이고 둘 다 처리했습니다:
 
-- **EditText hints return nothing** (`髪型・カラーなど`, `指定なし`), since a hint is not
-  really text. Those fall back to estimating from the box, which still needs the
-  node-wide wash to hide a source it cannot locate.
-- **It is a synchronous call into the app**, 4-25ms a node; a screen of unseen strings
-  ran to 600ms, past the debounce, and the overlay trailed scrolling. Two things fix it.
-  Ink geometry is cached relative to the node box, which scrolling does not change, so
-  revisited text is free. And the debounced pass never probes at all — it draws from
-  cache and estimates — while a second pass 450ms after events stop fills in the rest.
-  A scroll now costs a tree walk (20-290ms, depending on how busy the app is) and
-  settles into exact placement shortly after it stops.
+- **EditText 힌트는 아무것도 안 줍니다**(`髪型・カラーなど`, `指定なし`). 힌트는 실제 텍스트가
+  아니기 때문입니다. 이 경우만 박스 추정으로 폴백하고, 원문 위치를 모르니 노드 전체 워시가
+  여전히 필요합니다.
+- **앱 프로세스로 들어가는 동기 호출**이라 노드당 4~25ms입니다. 처음 보는 문자열로 채워진
+  화면은 600ms까지 걸려 디바운스를 넘겼고 오버레이가 스크롤을 따라오지 못했습니다. 두 가지로
+  잡았습니다. 잉크 좌표를 **노드 기준 상대값으로 캐시**합니다. 스크롤은 노드를 평행이동만
+  시키므로 재방문 텍스트는 조회가 공짜입니다. 그리고 **디바운스 패스는 아예 조회하지 않고**
+  캐시와 추정으로 그린 뒤, 이벤트가 멎고 450ms 후의 정착 패스가 나머지를 채웁니다. 지금
+  스크롤 비용은 트리 순회뿐이고(앱이 얼마나 바쁘냐에 따라 20~290ms), 멈추면 곧 정확한
+  위치로 정착합니다.
 
-## Rendering
+## 렌더링
 
-- Whole node: translucent white `argb(120,255,255,255)`, so button pink and the selected
-  tab underline still read through.
-- Behind the text: opaque white, full node width, over the line height.
-- Text: left aligned, `rgb(24,24,28)`, starting at 0.62 x box height, shrinking 1px at a
-  time until it fits, floor 14px, ceiling 60px. Then every node of the same height is
-  dropped to the smallest size among them — see below.
-- Not yet translated: the source in `rgb(150,150,156)`.
-- No borders.
+경로가 둘입니다.
 
-Splitting the node wash from the opaque band is the whole trick. All-translucent keeps the
-app's colours but the original shows through and neither is readable; all-opaque is
-readable but turns the app into a field of white boxes.
+**측정 경로** — 글자별 좌표 API가 답한 경우. 노드 워시 없음.
 
-Do not centre the text. Centring moves the problem onto the tab and button labels that
-currently read fine, rather than solving it.
+- 원문 잉크 박스와 우리 글자가 차지할 범위의 합집합만 불투명 흰색으로 덮습니다.
+- 글자는 왼쪽 정렬, `rgb(24, 24, 28)`, 크기는 원문 라인 높이에서 역산.
+- 폭이 넘치면 1px씩 줄이고(최소 14px), 그래도 안 되면 `StaticLayout`으로 줄바꿈합니다.
 
-Three of these values came from device screenshots during this build rather than from the
-original spec, and each is commented at its definition in `OverlayView.kt`:
+**폴백 경로** — 힌트 텍스트처럼 API가 답하지 않은 경우. 원문이 어디 있는지 모르므로
+노드 전체를 가려야 합니다.
 
-- **The opaque band spans the node's full width, not just our glyphs.** Glyph-width-only
-  assumes the source and the translation occupy the same span. Korean is usually shorter
-  and the Japanese is often centred, so the tail stayed legible — "미디엄ディアム".
-- **60px text ceiling.** The 検索 node is 144px tall around ~40px text, so 0.62 x height
-  gave 89px type and a band thick enough to swallow the button's pink.
-- **Vertical centring uses fontMetrics top/bottom, not ascent/descent.** `TextView`
-  defaults to `includeFontPadding=true` and centres on top..bottom; centring on
-  ascent..descent put every string `(descent - ascent + |top| - bottom) / 2` ~ 0.075em
-  high — 3px at 36px, which reads as the whole overlay sitting subtly off. Measured with
-  `DEBUG_GRID` and `tools/measure.py`: our ink centre went from -0.4px to +2.1px against
-  the node centre, where the Japanese it replaces sits at +2.4px.
-- **Equal-height nodes share one text size.** Sizing each label on its own made siblings
-  wildly uneven, because shrink-to-fit is driven by how long each translation happens to
-  be while the Japanese it replaces was all one size: one list had "핸섬 숏" at 60px
-  beside "보브 스타일링 헤어" at 30px. Nodes of equal height held equal-sized text, so
-  they are grouped by height and the group takes its smallest member — that list is now
-  uniformly 30px. Items that overflow even at the 14px floor are excluded from the vote;
-  they are sentences, not labels, and would drag their group down with them.
-- **A multi-line source gets its whole node covered.** The message card's node is
-  `[48,721][352,916]` — 195px around ~92px of text sitting against the bottom, not
-  centred — so a centred band misses the second line. Costs the decorative icon inside
-  such nodes; only single-line nodes need their colour showing through, so buttons and
-  tabs are unaffected.
+- 노드 전체에 반투명 흰색 `argb(160, 255, 255, 255)`.
+- 그 위에 노드 폭 전체 × 글자 높이만큼 불투명 흰색 띠.
+- 크기는 박스 높이 × 0.62로 시작해 폭에 맞을 때까지 1px씩 축소(하한 14px, 상한 60px).
+  그다음 **높이가 같은 노드끼리 묶어 그중 최솟값으로 통일**합니다.
 
-## Glossary
+공통: 번역 전에는 원문을 흐린 회색 `rgb(150, 150, 156)`으로 그립니다. 테두리는 없습니다.
 
-ML Kit has no ja→ko model. It routes ja→en→ko and beauty jargon does not survive the
-detour; it also keeps turning noun phrases into "-하십시오" imperatives, which is the
-English round-trip showing through. `セミロング` came back as "semilone".
+**가운데 정렬은 하지 마세요.** 이미 잘 읽히는 탭·버튼 라벨로 문제가 옮겨갈 뿐 해결되지
+않습니다. 참고로 측정 경로가 원문 자리에 그리는 건 "가운데 정렬 규칙"이 아니라 원문이 실제로
+있던 좌표를 쓰는 것이라 이 실패 모드가 없습니다.
 
-Exact match only. Substring replacement splices terms into the middle of longer sentences.
+아래 값들은 스펙이 아니라 실기기 스크린샷을 보고 정한 것이고, 각각 `OverlayView.kt`의
+정의부에 이유가 주석으로 있습니다.
 
-`Glossary.kt` is split in two, because a wrong glossary entry is worse than ML Kit — it is
-wrong with confidence:
+- **폴백의 불투명 띠는 글자 폭이 아니라 노드 폭 전체입니다.** 글자 폭만 덮는 건 원문과 번역문이
+  같은 자리를 차지한다는 가정인데, 한국어가 대체로 더 짧고 원문은 가운데 정렬인 경우가 많아
+  꼬리가 그대로 읽혔습니다 — "미디엄ディアム".
+- **글자 크기 상한 60px.** `検索` 노드는 높이 144px 안에 ~40px 글자가 들어 있어서, 0.62배만
+  쓰면 89px이 나오고 띠가 두꺼워져 버튼 분홍색을 삼켰습니다.
+- **세로 정렬은 fontMetrics의 top/bottom 기준.** `TextView`는 `includeFontPadding=true`가
+  기본이라 top~bottom으로 중앙을 맞춥니다. ascent~descent로 맞추면 모든 글자가
+  `(descent - ascent + |top| - bottom) / 2` ≈ 0.075em만큼 위로 뜹니다. 36px에서 3px이고,
+  화면 전체가 미묘하게 안 맞는 느낌으로 나타납니다. `DEBUG_GRID`와 `tools/measure.py`로 측정:
+  우리 잉크 중심이 노드 중심 대비 −0.4px에서 +2.1px로 이동했고, 원문은 +2.4px에 있습니다.
+- **높이가 같은 노드는 글자 크기를 공유합니다.** 각자 크기를 정하면 형제 항목이 제각각이
+  됩니다. 축소량이 "그 번역문이 얼마나 긴가"로 정해지는데 원문은 전부 같은 크기였기
+  때문입니다. 한 목록에서 "핸섬 숏"이 60px, "보브 스타일링 헤어"가 30px로 나왔습니다. 높이가
+  같으면 원문 크기도 같았으므로 높이로 묶고 그룹의 최솟값을 씁니다. 그 목록은 이제 전부
+  30px입니다. 14px 하한에서도 넘치는 항목은 투표에서 제외합니다. 라벨이 아니라 문장이라
+  그룹 전체를 끌어내리기 때문입니다.
+- **원문이 여러 줄인 노드는 폴백에서 노드 전체를 덮습니다.** 메시지 카드 노드는
+  `[48,721][352,916]`으로 195px 안에 ~92px 텍스트가 가운데가 아니라 **아래쪽에 붙어** 있어서,
+  중앙 정렬 띠가 둘째 줄을 놓칩니다. 그런 노드의 장식 아이콘이 덮이는 대가가 있지만, 색이
+  살아야 하는 버튼·탭은 전부 단일 행이라 영향받지 않습니다.
 
-- `VERIFIED` — observed on a real device, either a confirmed mistranslation or a read UI label.
-- `GUESSED` — plausible domain terms never checked against a real screen.
+## 용어집
 
-Entries that fire are tagged in the log, so the guesses can be reviewed against what
-actually appeared:
+ML Kit에는 ja→ko 모델이 없습니다. ja→en→ko로 돌기 때문에 미용 전문 용어가 이 우회에서
+살아남지 못합니다. 명사구를 자꾸 "~하십시오" 명령형으로 바꾸는 것도 영어 경유의 부작용입니다.
+`セミロング`는 "semilone"으로 돌아왔습니다.
+
+**완전일치만** 합니다. 부분 문자열 치환은 긴 문장 안에 용어를 엉뚱하게 끼워 넣습니다.
+
+`Glossary.kt`는 둘로 나뉘어 있습니다. 틀린 용어집 항목은 ML Kit보다 나쁘기 때문입니다 —
+엔진을 건너뛰므로 확신에 차서 틀립니다.
+
+- `VERIFIED` — 실기기에서 관측된 것. 확인된 오역이거나 화면에서 읽은 UI 라벨.
+- `GUESSED` — 그럴듯한 도메인 용어지만 실제 화면에서 검증한 적 없음.
+
+실제로 발동한 항목은 로그에 표시되므로, 추측 항목만 골라 실제 화면과 대조할 수 있습니다:
 
 ```bash
 adb pull /sdcard/Android/data/com.scrtrans/files/translations.jsonl
-grep '"guessed":true' translations.jsonl     # unverified entries that were actually used
-grep '"fromGlossary":false' translations.jsonl   # what ML Kit produced, for new failures
+grep '"guessed":true' translations.jsonl        # 실제로 쓰인 미검증 항목
+grep '"fromGlossary":false' translations.jsonl  # ML Kit 결과. 새 오역을 찾을 때
 ```
 
 ```json
 {"source":"セミロング","result":"세미롱","fromGlossary":true,"guessed":false}
 ```
 
-## Known limits
+## 알려진 한계
 
-- Text baked into images is invisible to us — the promotional banner stays Japanese.
-- A node whose bounds do not match its glyphs renders oddly. `ログイン` reports a 23px-tall
-  box, so the label draws tiny.
-- Strings with embedded counts (`未読のお知らせが 10件 あります。`) cannot be glossary
-  entries; they go to ML Kit whole.
-- Only `jp.hotpepper.android.beauty.hair`. `TARGET_PACKAGE` is a constant.
+- **원문 색을 모릅니다.** 우리는 흰 바탕에 검은 글자로 그리므로, 분홍 위 흰 글자였던
+  `検索` 라벨은 분홍 버튼 안의 흰 패치가 됩니다. 함정 6번의 미결 과제입니다.
+- 이미지에 박힌 글자는 보이지 않습니다. 배너 광고는 일본어로 남습니다.
+- 박스가 글자와 안 맞는 노드는 이상하게 그려집니다. `ログイン`은 높이를 23px로 보고해서
+  라벨이 아주 작게 그려집니다.
+- 숫자가 끼어 있는 문자열(`未読のお知らせが 10件 あります。`)은 완전일치가 안 되므로 용어집에
+  넣을 수 없고 통째로 ML Kit에 갑니다.
+- 대상은 `jp.hotpepper.android.beauty.hair` 하나뿐입니다. `TARGET_PACKAGE`가 상수입니다.
