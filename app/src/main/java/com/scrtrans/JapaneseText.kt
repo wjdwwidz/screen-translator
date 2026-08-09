@@ -23,3 +23,26 @@ fun containsJapanese(s: String): Boolean {
     }
     return false
 }
+
+/**
+ * True if the string contains hiragana or katakana.
+ *
+ * Narrower than [containsJapanese] on purpose. Kanji are shared with Chinese, so a
+ * screen of nothing but kanji says "CJK", not "Japanese" — kana is what settles it.
+ * Used when deciding whether a whole app is worth offering to translate, never when
+ * deciding whether to draw over a string we were already asked to handle.
+ */
+fun containsKana(s: String): Boolean {
+    for (ch in s) {
+        val c = ch.code
+        val kana = when {
+            c in 0x3040..0x309F -> true // hiragana
+            c in 0x30A0..0x30FF -> true // katakana
+            c in 0x31F0..0x31FF -> true // katakana phonetic extensions
+            c in 0xFF66..0xFF9D -> true // half-width katakana
+            else -> false
+        }
+        if (kana) return true
+    }
+    return false
+}

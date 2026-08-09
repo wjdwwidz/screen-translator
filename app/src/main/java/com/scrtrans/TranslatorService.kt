@@ -8,8 +8,6 @@ import android.view.accessibility.AccessibilityEvent
 class TranslatorService : AccessibilityService() {
 
     companion object {
-        const val TARGET_PACKAGE = "jp.hotpepper.android.beauty.hair"
-
         /** Without this the tree gets re-walked dozens of times a second while scrolling. */
         private const val DEBOUNCE_MS = 300L
 
@@ -42,6 +40,7 @@ class TranslatorService : AccessibilityService() {
         overlay = OverlayManager(this)
         overlay.attach()
         TranslationLog.init(this)
+        TargetApps.init(this)
 
         // Cache/dedup on the outside, glossary short-circuit next, engine at the bottom.
         translator = CachingTranslator(GlossaryEngine(MlKitEngine())) {
@@ -56,7 +55,7 @@ class TranslatorService : AccessibilityService() {
         val m = resources.displayMetrics
         screenW = m.widthPixels
         screenH = m.heightPixels
-        logi("service connected, target=$TARGET_PACKAGE screen=${screenW}x$screenH")
+        logi("service connected, targets=${TargetApps.targets().joinToString(",")} screen=${screenW}x$screenH")
     }
 
     // Events arrive for every app, on purpose. Filtering by packageNames in the XML
@@ -72,13 +71,16 @@ class TranslatorService : AccessibilityService() {
         val root = rootInActiveWindow
         val pkg = root?.packageName?.toString()
 
-        if (root == null || pkg != TARGET_PACKAGE) {
+        if (root == null || pkg !in TargetApps.targets()) {
             if (lastWasTarget) {
                 lastItems = emptyList()
                 overlay.clear()
                 lastWasTarget = false
                 logi("left target (now=$pkg), overlay cleared")
             }
+            // Nothing is drawn here, but this is the only place that ever sees the other
+            // apps on the device, so it is where a new Japanese one can be noticed.
+            if (root != null && pkg != null) JapaneseScout.observe(this, pkg, root)
             return
         }
         lastWasTarget = true
