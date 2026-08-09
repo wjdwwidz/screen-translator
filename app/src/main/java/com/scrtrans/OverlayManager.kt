@@ -47,7 +47,7 @@ class OverlayManager(private val service: AccessibilityService) {
         logi("overlay attached")
     }
 
-    fun show(items: List<TextItem>) {
+    fun show(items: List<RenderItem>) {
         view?.setItems(items)
     }
 

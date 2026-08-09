@@ -62,10 +62,9 @@ class TranslatorService : AccessibilityService() {
 
         val items = TextCollector.collect(root, screenW, screenH)
         logi("collected ${items.size} items")
-        for (it in items) {
-            logd("  \"${it.text}\"  ${it.bounds.left},${it.bounds.top},${it.bounds.right},${it.bounds.bottom}")
-        }
-        overlay.show(items)
+        // No engine yet: redraw the source where it already is, which is what proves
+        // the geometry. Adding translation first would mix up the causes of any error.
+        overlay.show(items.map { RenderItem(it.text, it.text, it.bounds, translated = false) })
     }
 
     override fun onInterrupt() {}
