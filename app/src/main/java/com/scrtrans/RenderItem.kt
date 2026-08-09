@@ -14,6 +14,8 @@ data class RenderItem(
     val translated: Boolean,
     val inkLines: List<Rect> = emptyList(),
     val sourceLineHeight: Float = 0f,
+    /** The box the source was laid out in; see TextItem.container. */
+    val container: Rect = bounds,
 ) {
     val hasInk get() = inkLines.isNotEmpty() && sourceLineHeight > 0f
 }

@@ -9,6 +9,7 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.View
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -99,17 +100,31 @@ class OverlayView(context: Context) : View(context) {
      *
      * Size comes from the source's line box rather than a guess: font metrics scale
      * linearly, so measuring our own line height at 100px and solving gives the size
-     * whose lines match the Japanese exactly. Position likewise — the baseline is
-     * pinned to the source's own line top, so no centring rule is involved at all.
+     * whose lines match the Japanese exactly. Vertical position likewise — the baseline
+     * is pinned to the source's own line top, so no centring rule is involved at all.
+     *
+     * Horizontally the source's own alignment has to be reproduced, because the
+     * translation is rarely the same width: anchoring a centred label at its left edge
+     * leaves a shorter Korean string sitting off to one side. A bottom-tab label is the
+     * visible case — 북마크 drifted left of the icon it belongs to.
      */
     private fun prepareFromInk(item: RenderItem): Prepared {
         val first = item.inkLines.first()
         val inkUnion = Rect(first)
         for (r in item.inkLines) inkUnion.union(r)
 
-        val left = first.left.toFloat()
-        val right = max(item.bounds.right, inkUnion.right)
-        val available = (right - left).toInt().coerceAtLeast(1)
+        val centred = isCentred(inkUnion, item.container) &&
+            // A wrap_content box hugs its text and can only say "centred"; one with room
+            // to spare has to agree, or this is an icon pushing left-aligned text right.
+            (item.bounds.width() < inkUnion.width() + 8 || isCentred(inkUnion, item.bounds))
+
+        val cx = inkUnion.exactCenterX()
+        val available = if (centred) {
+            // The widest run still centred on cx that the container holds.
+            (2f * min(cx - item.container.left, item.container.right - cx)).toInt()
+        } else {
+            max(item.bounds.right, inkUnion.right) - first.left
+        }.coerceAtLeast(1)
 
         var size = sizeForLineHeight(item.sourceLineHeight)
         while (size > MIN_TEXT_PX) {
@@ -118,18 +133,19 @@ class OverlayView(context: Context) : View(context) {
             size -= 1f
         }
         measurePaint.textSize = size
-        val fitsOneLine = measurePaint.measureText(item.display) <= available
+        val width = measurePaint.measureText(item.display)
+        val fitsOneLine = width <= available
 
         textPaint.textSize = size
         val fm = textPaint.fontMetrics
 
         val band = Rect(inkUnion)
-        band.left = (left - GLYPH_PAD).toInt()
 
         if (fitsOneLine) {
             // Line top == the source's line top, so our text lands on its line.
             val baseline = first.top - fm.top
-            val width = measurePaint.measureText(item.display)
+            val left = if (centred) cx - width / 2f else first.left.toFloat()
+            band.left = min(inkUnion.left, (left - GLYPH_PAD).toInt())
             band.right = max(inkUnion.right, (left + width + GLYPH_PAD).toInt())
             band.bottom = max(inkUnion.bottom, (baseline + fm.bottom).toInt())
             return Prepared(
@@ -138,16 +154,31 @@ class OverlayView(context: Context) : View(context) {
             )
         }
 
-        val layout = buildLayout(item.display, available, size)
+        val layout = buildLayout(item.display, available, size, centred)
+        val layoutLeft = if (centred) cx - available / 2f else first.left.toFloat()
         val top = first.top.toFloat()
         var widest = 0f
         for (i in 0 until layout.lineCount) widest = max(widest, layout.getLineWidth(i))
-        band.right = max(inkUnion.right, (left + widest + GLYPH_PAD).toInt())
+        // Centred lines sit in the middle of the layout box, not at its edge.
+        val inkLeft = if (centred) cx - widest / 2f else layoutLeft
+        band.left = min(inkUnion.left, (inkLeft - GLYPH_PAD).toInt())
+        band.right = max(inkUnion.right, (inkLeft + widest + GLYPH_PAD).toInt())
         band.bottom = max(inkUnion.bottom, (top + layout.height).toInt())
         return Prepared(
-            item.bounds, band, left, size, item.translated,
+            item.bounds, band, layoutLeft, size, item.translated,
             null, 0f, layout, top, washNode = false,
         )
+    }
+
+    /**
+     * Equal slack on both sides of [box], and enough of it to be a decision rather than
+     * padding. The tolerance scales with the box so a wide one is not held to a pixel.
+     */
+    private fun isCentred(ink: Rect, box: Rect): Boolean {
+        val l = ink.left - box.left
+        val r = box.right - ink.right
+        val tol = (box.width() * 0.03f).coerceIn(2f, 12f)
+        return l > tol && r > tol && abs(l - r) <= tol
     }
 
     /** Estimate from the node box. Only reached for text the API would not describe. */
@@ -218,11 +249,18 @@ class OverlayView(context: Context) : View(context) {
         return (target * 100f / at100).coerceAtLeast(MIN_TEXT_PX)
     }
 
-    private fun buildLayout(text: String, width: Int, size: Float): StaticLayout {
+    private fun buildLayout(
+        text: String,
+        width: Int,
+        size: Float,
+        centred: Boolean = false,
+    ): StaticLayout {
         val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = size }
         return StaticLayout.Builder
             .obtain(text, 0, text.length, p, width.coerceAtLeast(1))
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setAlignment(
+                if (centred) Layout.Alignment.ALIGN_CENTER else Layout.Alignment.ALIGN_NORMAL
+            )
             // Matches the single-line path and TextView's own default.
             .setIncludePad(true)
             .build()

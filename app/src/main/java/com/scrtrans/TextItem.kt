@@ -13,12 +13,18 @@ import android.graphics.Rect
  * button's label is centred, and a drawableStart icon pushes the text right. Both are
  * absent for text the API cannot describe (EditText hints), in which case OverlayView
  * falls back to estimating from the box.
+ *
+ * [container] is the nearest ancestor box wider than this node — the space the text was
+ * laid out in. It is what tells centred text apart from left-aligned text: a bottom-tab
+ * label is a wrap_content TextView, so its own box says nothing, but sitting with equal
+ * slack inside the tab cell does.
  */
 data class TextItem(
     val text: String,
     val bounds: Rect,
     val inkLines: List<Rect> = emptyList(),
     val sourceLineHeight: Float = 0f,
+    val container: Rect = bounds,
 ) {
     val hasInk get() = inkLines.isNotEmpty() && sourceLineHeight > 0f
 }

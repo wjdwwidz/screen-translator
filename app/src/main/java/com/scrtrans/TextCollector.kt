@@ -15,6 +15,20 @@ object TextCollector {
     private class InkGeom(val lines: List<Rect>, val lineHeight: Float)
 
     /**
+     * A node plus the boxes needed to say how its text is aligned.
+     *
+     * getParent() is a round trip into the app, and we are already walking downwards,
+     * so the ancestry rides along on the stack instead. [inherited] carries the nearest
+     * ancestor that was actually wider than the node it wrapped, which is what a chain
+     * of hugging wrap_content wrappers would otherwise hide.
+     */
+    private class Frame(
+        val node: AccessibilityNodeInfo,
+        val parentBounds: Rect?,
+        val inherited: Rect?,
+    )
+
+    /**
      * refreshWithExtraData is a synchronous call into the app's process and costs
      * 4-25ms a node; a full screen ran to 600ms, well past the 300ms debounce, and the
      * overlay visibly lagged a scroll. Scrolling only translates a node, so its ink
@@ -43,17 +57,26 @@ object TextCollector {
         val seen = HashSet<String>(64)
         var visited = 0
 
-        val stack = ArrayDeque<AccessibilityNodeInfo>()
-        stack.addLast(root)
+        val stack = ArrayDeque<Frame>()
+        stack.addLast(Frame(root, null, null))
 
         while (stack.isNotEmpty() && visited < MAX_NODES) {
-            val node = stack.removeLast()
+            val frame = stack.removeLast()
+            val node = frame.node
             visited++
+
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            // A parent that merely hugs its child says nothing about alignment, so keep
+            // looking up until one has slack in it.
+            val container = when {
+                frame.parentBounds != null && frame.parentBounds.width() > r.width() + 2 ->
+                    frame.parentBounds
+                else -> frame.inherited ?: r
+            }
 
             val text = node.text?.toString()?.trim()
             if (!text.isNullOrEmpty() && containsJapanese(text)) {
-                val r = Rect()
-                node.getBoundsInScreen(r)
                 if (isDrawable(r, screenW, screenH)) {
                     // Same string at the same spot can appear twice (e.g. a label and
                     // its wrapper both carrying text); drawing it twice just darkens it.
@@ -64,13 +87,13 @@ object TextCollector {
                         val lines = geom?.lines?.map {
                             Rect(it.left + r.left, it.top + r.top, it.right + r.left, it.bottom + r.top)
                         } ?: emptyList()
-                        out.add(TextItem(text, r, lines, geom?.lineHeight ?: 0f))
+                        out.add(TextItem(text, r, lines, geom?.lineHeight ?: 0f, container))
                     }
                 }
             }
 
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { stack.addLast(it) }
+                node.getChild(i)?.let { stack.addLast(Frame(it, r, container)) }
             }
         }
 

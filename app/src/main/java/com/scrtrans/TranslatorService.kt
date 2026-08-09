@@ -115,7 +115,7 @@ class TranslatorService : AccessibilityService() {
                 val ko = translator.translateOrNull(item.text)
                 RenderItem(
                     ko ?: item.text, item.bounds, ko != null,
-                    item.inkLines, item.sourceLineHeight,
+                    item.inkLines, item.sourceLineHeight, item.container,
                 )
             }
         )
