@@ -25,6 +25,8 @@ data class TextItem(
     val inkLines: List<Rect> = emptyList(),
     val sourceLineHeight: Float = 0f,
     val container: Rect = bounds,
+    /** Filled in by the settle pass's screenshot; null where it was not trustworthy. */
+    val colors: SourceColors? = null,
 ) {
     val hasInk get() = inkLines.isNotEmpty() && sourceLineHeight > 0f
 }

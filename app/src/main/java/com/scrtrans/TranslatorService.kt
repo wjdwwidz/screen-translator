@@ -86,18 +86,13 @@ class TranslatorService : AccessibilityService() {
         lastWasTarget = true
 
         val t0 = System.nanoTime()
-        lastItems = TextCollector.collect(root, screenW, screenH, probe)
+        lastItems = carryColours(TextCollector.collect(root, screenW, screenH, probe))
         val ms = (System.nanoTime() - t0) / 1_000_000.0
         val located = lastItems.count { it.hasInk }
         logi("collected ${lastItems.size} items, $located located, probe=$probe (${"%.0f".format(ms)}ms)")
         render()
 
-        if (probe && ColorProbe.ENABLED) {
-            ColorProbe.captureAndSample(
-                this,
-                lastItems.filter { it.hasInk }.take(6).map { it.text to it.inkLines.first() },
-            )
-        }
+        if (probe && ColorSampler.ENABLED && located > 0) sampleColors()
 
         // Anything still unlocated is either waiting on the settle pass or is text the
         // API will not describe. Either way, one more attempt once the screen is quiet.
@@ -105,6 +100,52 @@ class TranslatorService : AccessibilityService() {
             handler.removeCallbacks(settleTask)
             handler.postDelayed(settleTask, SETTLE_MS)
         }
+    }
+
+    /**
+     * Carries the last pass's colours onto the items just collected.
+     *
+     * A fresh walk of the tree knows no colours, so without this every content change
+     * repaints in the default dark-on-white and only goes back to the source's colours
+     * once the settle pass has taken its screenshot — a colour flash on every scroll
+     * stop, on top of the blank one the screenshot already costs.
+     *
+     * Keyed by text and box size, the same key the ink cache uses, so a scrolled node
+     * keeps its colours. A node that changed colour without changing either — a tab
+     * going active — keeps the stale pair until the settle pass overwrites it, which is
+     * a far smaller artefact than the flash.
+     */
+    private fun carryColours(fresh: List<TextItem>): List<TextItem> {
+        if (lastItems.isEmpty()) return fresh
+        val known = HashMap<String, SourceColors>(lastItems.size)
+        for (item in lastItems) item.colors?.let { known[colourKey(item)] = it }
+        if (known.isEmpty()) return fresh
+        return fresh.map { it.copy(colors = known[colourKey(it)]) }
+    }
+
+    private fun colourKey(item: TextItem) =
+        "${item.text}|${item.bounds.width()}x${item.bounds.height()}"
+
+    /**
+     * Reads the source's colours off the screen and redraws in them.
+     *
+     * The screenshot composites our own overlay, so the overlay comes down for the
+     * frame and the translations visibly blink. Nothing else can see past ourselves,
+     * and it only happens once a screen has settled.
+     */
+    private fun sampleColors() {
+        val snapshot = lastItems
+        overlay.clear()
+        handler.postDelayed({
+            ColorSampler.sample(this, snapshot) { coloured ->
+                handler.post {
+                    // A new screen may have arrived while the shot was in flight; its
+                    // items win, and rendering either way puts the overlay back up.
+                    if (lastItems === snapshot) lastItems = coloured
+                    render()
+                }
+            }
+        }, ColorSampler.CLEAR_MS)
     }
 
     /** Re-maps the current items through the translator. Cheap: it is a cache lookup. */
@@ -115,7 +156,7 @@ class TranslatorService : AccessibilityService() {
                 val ko = translator.translateOrNull(item.text)
                 RenderItem(
                     ko ?: item.text, item.bounds, ko != null,
-                    item.inkLines, item.sourceLineHeight, item.container,
+                    item.inkLines, item.sourceLineHeight, item.container, item.colors,
                 )
             }
         )

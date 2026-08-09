@@ -22,11 +22,19 @@ import kotlin.math.min
  * we place the Korean on top of exactly that and cover exactly that. When it did not
  * — EditText hints are the only case seen so far — we fall back to estimating from the
  * node box, which needs the node-wide wash to hide a source we cannot locate.
+ *
+ * Colours come from [ColorSampler] when it could read them and default to dark-on-white
+ * when it could not, so every item has to carry its own pair rather than share constants.
  */
 class OverlayView(context: Context) : View(context) {
 
     companion object {
-        /** Fallback path only: hides a source whose position we do not know. */
+        /**
+         * Fallback path, colour unknown: hides a source whose position we do not know.
+         * Translucent because an opaque white block would be more conspicuous than the
+         * Japanese showing through. When the surface colour *is* known it is painted
+         * opaque instead, which hides the source outright and costs nothing.
+         */
         private val NODE_BG = Color.argb(160, 255, 255, 255)
 
         /** Opaque, over the source's ink and our own text. */
@@ -58,13 +66,15 @@ class OverlayView(context: Context) : View(context) {
         val band: Rect,
         val textLeft: Float,
         val textSize: Float,
-        val translated: Boolean,
         val single: String?,
         val baseline: Float,
         val layout: StaticLayout?,
         val layoutTop: Float,
         /** Fallback items wash the whole node; ink-located items leave it alone. */
         val washNode: Boolean,
+        val washColor: Int,
+        val bandColor: Int,
+        val textColor: Int,
     )
 
     private var prepared: List<Prepared> = emptyList()
@@ -148,9 +158,11 @@ class OverlayView(context: Context) : View(context) {
             band.left = min(inkUnion.left, (left - GLYPH_PAD).toInt())
             band.right = max(inkUnion.right, (left + width + GLYPH_PAD).toInt())
             band.bottom = max(inkUnion.bottom, (baseline + fm.bottom).toInt())
+            confine(band, inkUnion, item)
             return Prepared(
-                item.bounds, band, left, size, item.translated,
-                item.display, baseline, null, 0f, washNode = false,
+                item.bounds, band, left, size,
+                item.display, baseline, null, 0f, washNode = false, washColor = NODE_BG,
+                bandColor = item.colors?.bg ?: GLYPH_BG, textColor = textColorFor(item),
             )
         }
 
@@ -164,11 +176,42 @@ class OverlayView(context: Context) : View(context) {
         band.left = min(inkUnion.left, (inkLeft - GLYPH_PAD).toInt())
         band.right = max(inkUnion.right, (inkLeft + widest + GLYPH_PAD).toInt())
         band.bottom = max(inkUnion.bottom, (top + layout.height).toInt())
+        confine(band, inkUnion, item)
         return Prepared(
-            item.bounds, band, layoutLeft, size, item.translated,
-            null, 0f, layout, top, washNode = false,
+            item.bounds, band, layoutLeft, size,
+            null, 0f, layout, top, washNode = false, washColor = NODE_BG,
+            bandColor = item.colors?.bg ?: GLYPH_BG, textColor = textColorFor(item),
         )
     }
+
+    /**
+     * A white band on a white page is invisible however far it runs, but one painted in
+     * the source's own colour is not: a pink band that overshoots its button leaves a
+     * pink rectangle sticking out of the corner. So a coloured band is held inside the
+     * node box — the widget the colour came from — while still covering all of the ink.
+     */
+    private fun confine(band: Rect, inkUnion: Rect, item: RenderItem) {
+        if (item.colors == null) return
+        band.intersect(item.bounds)
+        band.union(inkUnion)
+    }
+
+    /**
+     * Pending text is the Japanese source, and drawing it in the source's own ink would
+     * be indistinguishable from no overlay at all, so it is faded toward the surface —
+     * the same signal the grey-on-white default gives.
+     */
+    private fun textColorFor(item: RenderItem): Int {
+        val c = item.colors ?: return if (item.translated) TEXT_DONE else TEXT_PENDING
+        return if (item.translated) c.ink else blend(c.ink, c.bg, 0.45f)
+    }
+
+    /** [t] of the way from [from] to [to]. */
+    private fun blend(from: Int, to: Int, t: Float): Int = Color.rgb(
+        (Color.red(from) + (Color.red(to) - Color.red(from)) * t).toInt(),
+        (Color.green(from) + (Color.green(to) - Color.green(from)) * t).toInt(),
+        (Color.blue(from) + (Color.blue(to) - Color.blue(from)) * t).toInt(),
+    )
 
     /**
      * Equal slack on both sides of [box], and enough of it to be a decision rather than
@@ -200,8 +243,10 @@ class OverlayView(context: Context) : View(context) {
             val baseline = item.bounds.top + (h - lineH) / 2f - fm.top
             val band = Rect(item.bounds.left, (baseline + fm.top).toInt(), item.bounds.right, (baseline + fm.bottom).toInt())
             return Prepared(
-                item.bounds, band, left, size, item.translated,
+                item.bounds, band, left, size,
                 item.display, baseline, null, 0f, washNode = true,
+                washColor = item.colors?.bg ?: NODE_BG,
+                bandColor = item.colors?.bg ?: GLYPH_BG, textColor = textColorFor(item),
             )
         }
 
@@ -221,8 +266,10 @@ class OverlayView(context: Context) : View(context) {
         val top = item.bounds.top + (h - layout.height) / 2f
         val band = Rect(item.bounds.left, top.toInt(), item.bounds.right, (top + layout.height).toInt())
         return Prepared(
-            item.bounds, band, left, bestSize, item.translated,
+            item.bounds, band, left, bestSize,
             null, 0f, layout, top, washNode = true,
+            washColor = item.colors?.bg ?: NODE_BG,
+            bandColor = item.colors?.bg ?: GLYPH_BG, textColor = textColorFor(item),
         )
     }
 
@@ -286,15 +333,17 @@ class OverlayView(context: Context) : View(context) {
 
         for (p in prepared) {
             if (p.washNode) {
-                fillPaint.color = if (DEBUG_GRID) Color.WHITE else NODE_BG
+                fillPaint.color = if (DEBUG_GRID) Color.WHITE else p.washColor
                 canvas.drawRect(p.bounds, fillPaint)
             }
 
-            fillPaint.color = GLYPH_BG
+            fillPaint.color = if (DEBUG_GRID) GLYPH_BG else p.bandColor
             canvas.drawRect(p.band, fillPaint)
 
             textPaint.textSize = p.textSize
-            textPaint.color = if (p.translated) TEXT_DONE else TEXT_PENDING
+            // measure.py looks for dark ink on white, so the debug pass keeps the
+            // default colours whatever the source was drawn in.
+            textPaint.color = if (DEBUG_GRID) TEXT_DONE else p.textColor
 
             val single = p.single
             if (single != null) {

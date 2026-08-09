@@ -16,6 +16,8 @@ data class RenderItem(
     val sourceLineHeight: Float = 0f,
     /** The box the source was laid out in; see TextItem.container. */
     val container: Rect = bounds,
+    /** The source's own colours, or null to draw the default dark-on-white. */
+    val colors: SourceColors? = null,
 ) {
     val hasInk get() = inkLines.isNotEmpty() && sourceLineHeight > 0f
 }
