@@ -1,5 +1,6 @@
 package com.scrtrans
 
+import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -26,9 +27,9 @@ import android.view.accessibility.AccessibilityNodeInfo
  */
 object JapaneseScout {
 
-    private const val MIN_JA_NODES = 6
+    private const val MIN_JA_NODES = 4
     private const val MIN_JA_RATIO = 0.4
-    private const val QUALIFYING_SCREENS = 3
+    private const val QUALIFYING_SCREENS = 2
 
     /**
      * A ceiling on the cost, not a target. Real screens come in far under it — the
@@ -51,7 +52,7 @@ object JapaneseScout {
      * Called on every pass over an app we are not translating. Returns quickly for the
      * overwhelming majority of those passes without touching the tree.
      */
-    fun observe(context: Context, pkg: String, root: AccessibilityNodeInfo) {
+    fun observe(service: AccessibilityService, pkg: String, root: AccessibilityNodeInfo) {
         if (pkg in ineligible) return
 
         // Throttle first: the checks below read prefs, and this runs on every pass over
@@ -63,7 +64,7 @@ object JapaneseScout {
 
         if (pkg in TargetApps.detected()) return // already offered; nothing left to learn
 
-        if (!eligible(context, pkg)) {
+        if (!eligible(service, pkg)) {
             ineligible.add(pkg)
             return
         }
@@ -75,6 +76,7 @@ object JapaneseScout {
         logi("scout: $pkg qualifying screen ${seen.size}/$QUALIFYING_SCREENS")
         if (seen.size >= QUALIFYING_SCREENS) {
             TargetApps.markDetected(pkg)
+            DetectionSheet.show(service, pkg)
             qualifying.remove(pkg)
         }
     }
@@ -128,6 +130,9 @@ object JapaneseScout {
      */
     private fun eligible(context: Context, pkg: String): Boolean {
         if (pkg == context.packageName) return false
+        // A built-in already has its row, so there is nothing to discover and nothing to
+        // announce. Without this, switching one off would land us here and offer it back.
+        if (pkg in TargetApps.BUILT_IN) return false
         return try {
             context.packageManager.getLaunchIntentForPackage(pkg) != null
         } catch (e: Exception) {

@@ -150,7 +150,7 @@ class MainActivity : Activity() {
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(TextView(this@MainActivity).apply {
-                    text = if (installed) appLabel(pkg) else "${appLabel(pkg)} (미설치)"
+                    text = if (installed) appLabel(this@MainActivity, pkg) else "${appLabel(this@MainActivity, pkg)} (미설치)"
                     textSize = 15f
                     setTextColor(
                         if (installed) Color.rgb(24, 24, 28) else Color.rgb(170, 170, 176)
@@ -180,15 +180,6 @@ class MainActivity : Activity() {
         textSize = 16f
         setTextColor(Color.rgb(24, 24, 28))
         setPadding(0, 0, 0, 8)
-    }
-
-    /** The app's own name where we can get it, the package name where we cannot. */
-    private fun appLabel(pkg: String): String = try {
-        packageManager.getApplicationLabel(
-            packageManager.getApplicationInfo(pkg, 0)
-        ).toString()
-    } catch (e: PackageManager.NameNotFoundException) {
-        pkg
     }
 
     private fun isInstalled(pkg: String): Boolean = try {

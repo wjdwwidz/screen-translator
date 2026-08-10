@@ -76,7 +76,7 @@ object TextCollector {
             }
 
             val text = node.text?.toString()?.trim()
-            if (!text.isNullOrEmpty() && containsJapanese(text)) {
+            if (!text.isNullOrEmpty() && worthTranslating(text)) {
                 if (isDrawable(r, screenW, screenH)) {
                     // Same string at the same spot can appear twice (e.g. a label and
                     // its wrapper both carrying text); drawing it twice just darkens it.
@@ -182,6 +182,23 @@ object TextCollector {
             }
         }
         return InkGeom(lines, lineHeight)
+    }
+
+    /**
+     * Strings with no Japanese in them — "10", "¥5,500", "OPEN" — are left alone:
+     * covering them would only clutter the screen and waste engine calls.
+     *
+     * Katakana-only strings are left alone too, unless the glossary knows them. They are
+     * loanwords, the engine mistranslates about half of them, and its failure mode is
+     * confident nonsense — "프랑스 쾅" over フレンチバング. The source is the better
+     * answer there: it is at least the term the user is looking at. See [isKatakanaOnly].
+     * Deciding here rather than in the translator keeps our pixels off those labels
+     * entirely, so the app's own rendering shows through untouched.
+     */
+    private fun worthTranslating(text: String): Boolean {
+        if (!containsJapanese(text)) return false
+        if (isKatakanaOnly(text) && Glossary.lookup(text) == null) return false
+        return true
     }
 
     private fun isDrawable(r: Rect, screenW: Int, screenH: Int): Boolean {

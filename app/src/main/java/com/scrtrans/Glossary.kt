@@ -84,6 +84,27 @@ object Glossary {
         "マイページ" to "마이페이지",
         "ログイン" to "로그인",
         "ポイントがサロン予約でたまる・つかえる！" to "포인트가 살롱 예약으로 적립·사용 가능!",
+
+        // --- katakana loanwords, read off translations.jsonl ---
+        // Every one of these was on a real screen. Katakana-only strings the glossary
+        // does not know are now left untranslated (see isKatakanaOnly), so this list is
+        // what keeps the terms we have actually seen from going quiet.
+        "ツインテール" to "트윈테일",        // was: 쌍둥이 꼬리
+        "サイドポニー" to "사이드 포니",     // was: 측면 조랑말
+        "フレンチバング" to "프렌치 뱅",     // was: 프랑스 쾅
+        "シースルーバング" to "시스루 뱅",   // was: 슈즈 루 팡
+        "ハッシュカット" to "해시컷",        // was: 해시
+        "キッズカット" to "키즈컷",          // was: 아이들이 자른다
+        "レイヤーカット" to "레이어컷",      // was: 레이어
+        "ハイトーンカラー" to "하이톤 컬러", // was: 하이 톤 색상
+        "ウェーブヘア" to "웨이브 헤어",     // was: 웨이브 머리
+        "ホーム" to "홈",                    // was: 집
+        // These the engine already got right; listed so the skip rule does not lose them.
+        "プレミアム" to "프리미엄",
+        "ジャンル" to "장르",
+        "サロン" to "살롱",
+        "スタイリスト" to "스타일리스트",
+        "ネイルデザイン" to "네일 디자인",
     )
 
     /**
@@ -192,6 +213,15 @@ object Glossary {
     fun lookup(text: String): Hit? {
         VERIFIED[text]?.let { return Hit(it, guessed = false) }
         GUESSED[text]?.let { return Hit(it, guessed = true) }
+        // A label the app wrapped arrives with the break in it — "ネイル\nデザイン" is
+        // the same term as ネイルデザイン, and where it wraps depends on the column
+        // width, so it cannot be listed above. Japanese sets no space at a wrap, so the
+        // break is removed rather than turned into one.
+        if (text.any { it.isWhitespace() }) {
+            val joined = text.filterNot { it.isWhitespace() }
+            VERIFIED[joined]?.let { return Hit(it, guessed = false) }
+            GUESSED[joined]?.let { return Hit(it, guessed = true) }
+        }
         return null
     }
 

@@ -71,6 +71,9 @@ class TranslatorService : AccessibilityService() {
         val root = rootInActiveWindow
         val pkg = root?.packageName?.toString()
 
+        // An offer about one app must not end up sitting over the next one.
+        DetectionSheet.dismissIfNotFor(pkg)
+
         if (root == null || pkg !in TargetApps.targets()) {
             if (lastWasTarget) {
                 lastItems = emptyList()
@@ -168,6 +171,7 @@ class TranslatorService : AccessibilityService() {
         running = false
         handler.removeCallbacks(collectTask)
         handler.removeCallbacks(settleTask)
+        DetectionSheet.dismiss()
         overlay.detach()
         translator.close()
         logi("service unbound")

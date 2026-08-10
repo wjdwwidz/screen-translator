@@ -25,6 +25,42 @@ fun containsJapanese(s: String): Boolean {
 }
 
 /**
+ * True if the string is katakana and nothing else — no hiragana, no kanji.
+ *
+ * Katakana on its own is nearly always a loanword, and loanwords are where the
+ * ja->en->ko route fails hardest. It recovers the English, and the Korean side then
+ * translates that by meaning instead of carrying it across as the loanword Korean
+ * already borrowed from the same English: ツインテール came back as "쌍둥이 꼬리"
+ * rather than 트윈테일, サイドポニー as "측면 조랑말", フレンチバング as "프랑스 쾅".
+ * Of the katakana-only strings the engine handled on real screens, about half were
+ * wrong this way.
+ *
+ * Transliterating the kana instead does not help. Katakana is itself a Japanese
+ * rendering of the English, so sounding it out in hangul gives 츠인테루, not 트윈테일.
+ * Only a word list gets there, which is what [Glossary] is.
+ *
+ * Marks like ー and ・ live in the katakana block, so they need no special case.
+ */
+fun isKatakanaOnly(s: String): Boolean {
+    var katakana = false
+    for (ch in s) {
+        val c = ch.code
+        when {
+            c in 0x30A0..0x30FF -> katakana = true
+            c in 0x31F0..0x31FF -> katakana = true
+            c in 0xFF66..0xFF9D -> katakana = true
+            // Anything that makes it Japanese rather than a loanword settles it.
+            c in 0x3040..0x309F -> return false // hiragana
+            c in 0x3400..0x4DBF -> return false // kanji
+            c in 0x4E00..0x9FFF -> return false
+            c in 0xF900..0xFAFF -> return false
+            // Digits, latin, spaces and punctuation say nothing either way.
+        }
+    }
+    return katakana
+}
+
+/**
  * True if the string contains hiragana or katakana.
  *
  * Narrower than [containsJapanese] on purpose. Kanji are shared with Chinese, so a
