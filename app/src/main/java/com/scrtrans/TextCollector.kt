@@ -38,8 +38,9 @@ object TextCollector {
      * 4-25ms a node; a full screen ran to 600ms, well past the 300ms debounce, and the
      * overlay visibly lagged a scroll. Scrolling only translates a node, so its ink
      * geometry relative to its own box is stable — cache that, keyed by the text and the
-     * box size, and a scroll re-probes nothing. Misses are cached too, so EditText hints
-     * are asked once rather than on every pass.
+     * box size, and a scroll re-probes nothing.
+     *
+     * Only hints are cached as misses; see [inkGeom].
      */
     private val inkCache = object : LinkedHashMap<String, InkGeom?>(128, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, InkGeom?>) =
@@ -119,6 +120,20 @@ object TextCollector {
      * they need no conversion of their own.
      *
      * Unrelated to extraRenderingInfo.textSizeInPx, which is null on every node here.
+     *
+     * A miss is only worth remembering when it is going to happen again. It is, for a
+     * hint: a hint is not the text, so there are no characters to locate and there never
+     * will be. For anything else a miss is noise — a view that is mid-transition or not
+     * laid out yet answers for no characters either, and caching *that* pins a perfectly
+     * locatable label to OverlayView's estimate path, which covers the node box whole and
+     * takes any leading icon with it. Measured on the style-search tab: 12 of 21 strings
+     * stuck there against 2 of 21 on a freshly started service, the pin beside エリア and
+     * the magnifier beside キーワード gone with them, and nothing short of restarting the
+     * process brought them back.
+     *
+     * So a non-hint miss is simply not recorded, and the next settle pass asks again. That
+     * costs 4-25ms a node per pass for as long as it keeps failing, which is affordable
+     * because it is a handful of nodes; the cache exists to stop a *screenful* of them.
      */
     private fun inkGeom(
         node: AccessibilityNodeInfo,
@@ -131,10 +146,11 @@ object TextCollector {
         val key = "$text|${bounds.width()}x${bounds.height()}"
         if (inkCache.containsKey(key)) return inkCache[key]
         // Not cached and not allowed to ask: leave the cache untouched so the settle
-        // pass still tries, rather than recording a miss that would never be retried.
+        // pass still tries, rather than recording a miss it never actually looked for.
         if (!probe) return null
         val geom = probeCharacterLocations(node, text, bounds, screenW, screenH)
-        inkCache[key] = geom
+        // refreshWithExtraData has just refreshed the node, so the hint flag is current.
+        if (geom != null || node.isShowingHintText) inkCache[key] = geom
         return geom
     }
 

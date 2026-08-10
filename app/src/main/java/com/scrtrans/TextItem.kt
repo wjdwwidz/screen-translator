@@ -30,10 +30,11 @@ data class TextItem(
     /** Filled in by the settle pass's screenshot; null where it was not trustworthy. */
     val colors: SourceColors? = null,
     /**
-     * Where the node box's content ends, read off the same screenshot; 0 if unread.
-     * Only collected for boxes with no ink, which are the only ones that need it — see
-     * ColorSampler.contentRight.
+     * Where the node box's own text starts and ends, read off the same screenshot; 0 if
+     * unread. Only collected for boxes with no ink, which are the only ones that need it
+     * — see ColorSampler.contentSpan.
      */
+    val inkLeft: Int = 0,
     val inkRight: Int = 0,
 ) {
     val hasInk get() = inkLines.isNotEmpty() && sourceLineHeight > 0f
