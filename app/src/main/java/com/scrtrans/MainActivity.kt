@@ -2,14 +2,18 @@ package com.scrtrans
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 
 /**
@@ -19,13 +23,15 @@ import android.widget.TextView
 class MainActivity : Activity() {
 
     private lateinit var status: TextView
+    private lateinit var appList: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        TargetApps.init(this)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 96, 48, 48)
+            setPadding(48, 48, 48, 48)
             setBackgroundColor(Color.WHITE)
         }
 
@@ -36,16 +42,15 @@ class MainActivity : Activity() {
         })
 
         root.addView(TextView(this).apply {
-            text = "핫페퍼 뷰티(${TranslatorService.TARGET_PACKAGE})의 일본어 화면 위에 " +
-                "한국어 번역을 겹쳐 표시합니다."
+            text = getString(R.string.service_description)
             textSize = 14f
             setTextColor(Color.rgb(90, 90, 96))
-            setPadding(0, 24, 0, 48)
+            setPadding(0, 24, 0, 40)
         })
 
         status = TextView(this).apply {
             textSize = 18f
-            setPadding(0, 0, 0, 48)
+            setPadding(0, 0, 0, 40)
         }
         root.addView(status)
 
@@ -59,8 +64,36 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ))
 
+        // Rebuilt in onResume rather than filled once: the scout adds rows while the
+        // user is off in another app, and coming back here is when they would look.
+        appList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 56, 0, 0)
+        }
+        root.addView(appList)
+
         root.gravity = Gravity.TOP
-        setContentView(root)
+
+        // targetSdk 35+ draws the window edge to edge, so the status bar would otherwise sit
+        // on top of the title. Inset the content instead of guessing a top padding.
+        val screen = ScrollView(this).apply {
+            setBackgroundColor(Color.WHITE)
+            addView(
+                root,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+            setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
+                )
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                insets
+            }
+        }
+        setContentView(screen)
     }
 
     override fun onResume() {
@@ -68,6 +101,92 @@ class MainActivity : Activity() {
         val on = isServiceEnabled()
         status.text = if (on) "● 켜짐 — 번역이 동작합니다" else "○ 꺼짐 — 접근성 설정에서 켜주세요"
         status.setTextColor(if (on) Color.rgb(20, 130, 70) else Color.rgb(190, 60, 60))
+        buildAppList()
+    }
+
+    /**
+     * One row per known app with a switch on it. Built-ins sort first and start on;
+     * everything the scout found sorts after and starts off, so leaving a newly found
+     * app alone is the same as declining it — and its row is still here tomorrow.
+     */
+    private fun buildAppList() {
+        appList.removeAllViews()
+
+        appList.addView(sectionLabel("앱별 번역"))
+        appList.addView(TextView(this).apply {
+            text = "켜 둔 앱의 화면에만 번역을 겹쳐 표시합니다."
+            textSize = 13f
+            setTextColor(Color.rgb(140, 140, 148))
+            setPadding(0, 0, 0, 16)
+        })
+
+        val known = TargetApps.known().sortedWith(
+            compareBy({ it !in TargetApps.BUILT_IN }, { it }),
+        )
+        for (pkg in known) appList.addView(appRow(pkg))
+
+        val found = TargetApps.detected().size
+        appList.addView(TextView(this).apply {
+            text = if (found == 0) {
+                "다른 일본어 앱을 사용하면 여기에 자동으로 추가됩니다."
+            } else {
+                "일본어 앱 ${found}개를 찾았습니다. 다른 앱을 사용하면 여기에 계속 추가됩니다."
+            }
+            textSize = 12f
+            setTextColor(Color.rgb(160, 160, 168))
+            setPadding(0, 24, 0, 0)
+        })
+    }
+
+    private fun appRow(pkg: String): LinearLayout {
+        val installed = isInstalled(pkg)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 16, 0, 16)
+        }
+
+        row.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@MainActivity).apply {
+                    text = if (installed) appLabel(this@MainActivity, pkg) else "${appLabel(this@MainActivity, pkg)} (미설치)"
+                    textSize = 15f
+                    setTextColor(
+                        if (installed) Color.rgb(24, 24, 28) else Color.rgb(170, 170, 176)
+                    )
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = pkg
+                    textSize = 11f
+                    setTextColor(Color.rgb(160, 160, 168))
+                })
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+
+        row.addView(Switch(this).apply {
+            // Checked before the listener is attached, or restoring state would read as
+            // a tap and write back what it just read.
+            isChecked = TargetApps.isEnabled(pkg)
+            setOnCheckedChangeListener { _, on -> TargetApps.setEnabled(pkg, on) }
+        })
+
+        return row
+    }
+
+    private fun sectionLabel(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 16f
+        setTextColor(Color.rgb(24, 24, 28))
+        setPadding(0, 0, 0, 8)
+    }
+
+    private fun isInstalled(pkg: String): Boolean = try {
+        packageManager.getApplicationInfo(pkg, 0)
+        true
+    } catch (e: PackageManager.NameNotFoundException) {
+        false
     }
 
     private fun isServiceEnabled(): Boolean {

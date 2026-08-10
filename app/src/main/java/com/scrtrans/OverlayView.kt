@@ -9,6 +9,7 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.View
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -21,11 +22,19 @@ import kotlin.math.min
  * we place the Korean on top of exactly that and cover exactly that. When it did not
  * — EditText hints are the only case seen so far — we fall back to estimating from the
  * node box, which needs the node-wide wash to hide a source we cannot locate.
+ *
+ * Colours come from [ColorSampler] when it could read them and default to dark-on-white
+ * when it could not, so every item has to carry its own pair rather than share constants.
  */
 class OverlayView(context: Context) : View(context) {
 
     companion object {
-        /** Fallback path only: hides a source whose position we do not know. */
+        /**
+         * Fallback path, colour unknown: hides a source whose position we do not know.
+         * Translucent because an opaque white block would be more conspicuous than the
+         * Japanese showing through. When the surface colour *is* known it is painted
+         * opaque instead, which hides the source outright and costs nothing.
+         */
         private val NODE_BG = Color.argb(160, 255, 255, 255)
 
         /** Opaque, over the source's ink and our own text. */
@@ -37,9 +46,30 @@ class OverlayView(context: Context) : View(context) {
         private const val MIN_TEXT_PX = 14f
         private const val GLYPH_PAD = 4f
 
+        /** Fraction of a character the wash reaches past the source's left edge. */
+        private const val WASH_SLACK = 0.5f
+
+        /**
+         * The sizes a translation may be drawn at, as fractions of the source's own.
+         * Few and coarse on purpose: see [fitToWidth].
+         */
+        private val SHRINK_STEPS = floatArrayOf(1f, 0.85f, 0.7f)
+
+        /** Lines a translation may use beyond what the source itself used. */
+        private const val EXTRA_LINES = 1
+
+        /** Below this many characters' width, a box is treated as clipped, not narrow. */
+        private const val MIN_FIT_EMS = 3f
+
         // Fallback-path estimates, unused when ink is available.
         private const val HEIGHT_RATIO = 0.62f
         private const val MAX_TEXT_PX = 60f
+
+        /** How far an estimate may be pulled onto a size the screen was measured at. */
+        private const val SNAP_TOLERANCE = 0.35f
+
+        /** A line box measures about this many times its font size, includePad and all. */
+        private const val LINE_BOX_RATIO = 1.5f
 
         /**
          * Debug: force an opaque backdrop, draw 1px rules at known absolute screen
@@ -47,6 +77,9 @@ class OverlayView(context: Context) : View(context) {
          * against the bounds the tree reported. tools/measure.py reads the result.
          */
         const val DEBUG_GRID = false
+
+        /** Logs how each item's size was arrived at, for tuning the fitting rules. */
+        const val DEBUG_SIZE = false
         private const val RULE_X = 500f
         private const val RULE_Y = 1000f
     }
@@ -57,13 +90,17 @@ class OverlayView(context: Context) : View(context) {
         val band: Rect,
         val textLeft: Float,
         val textSize: Float,
-        val translated: Boolean,
         val single: String?,
         val baseline: Float,
         val layout: StaticLayout?,
         val layoutTop: Float,
         /** Fallback items wash the whole node; ink-located items leave it alone. */
         val washNode: Boolean,
+        /** What [washNode] paints. The node box, less any icon we could locate. */
+        val wash: Rect,
+        val washColor: Int,
+        val bandColor: Int,
+        val textColor: Int,
     )
 
     private var prepared: List<Prepared> = emptyList()
@@ -76,20 +113,19 @@ class OverlayView(context: Context) : View(context) {
     private val measurePaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
 
     fun setItems(items: List<RenderItem>) {
-        // Fallback items still get their sizes evened out across equal-height nodes;
-        // ink-located ones need no such help, since the Japanese they copy was uniform.
-        val fallbackSize = HashMap<Int, Float>()
-        for (item in items) {
-            if (item.hasInk) continue
-            val (s, fits) = estimatedSize(item)
-            if (!fits) continue
-            val h = item.bounds.height()
-            val cur = fallbackSize[h]
-            if (cur == null || s < cur) fallbackSize[h] = s
-        }
+        // The type scale this screen actually uses, read off the items the API did
+        // describe. An estimate that lands near one of these is almost certainly meant
+        // to be that size, and saying so is what keeps the guessed items from being the
+        // one odd size on an otherwise even screen.
+        val measured = items.filter { it.hasInk }.map { it.sourceEmSize }
+        val scale = measured.distinct().sorted()
+        // The size most of the screen is set in. Ties go to the smaller, since drawing a
+        // guess too large is the more conspicuous way to be wrong.
+        val body = measured.groupingBy { it }.eachCount().entries
+            .maxWithOrNull(compareBy({ it.value }, { -it.key }))?.key ?: 0f
 
         prepared = items.map { item ->
-            if (item.hasInk) prepareFromInk(item) else prepareFromBox(item, fallbackSize)
+            if (item.hasInk) prepareFromInk(item) else prepareFromBox(item, scale, body)
         }
         invalidate()
     }
@@ -97,116 +133,308 @@ class OverlayView(context: Context) : View(context) {
     /**
      * The measured path.
      *
-     * Size comes from the source's line box rather than a guess: font metrics scale
-     * linearly, so measuring our own line height at 100px and solving gives the size
-     * whose lines match the Japanese exactly. Position likewise — the baseline is
+     * Size is the source's own font size, measured off its glyphs — see
+     * TextCollector.emSize — so two labels drawn at the same size come out the same size
+     * here, whatever their widgets differ in. Vertical position likewise: the baseline is
      * pinned to the source's own line top, so no centring rule is involved at all.
+     *
+     * Horizontally the source's own alignment has to be reproduced, because the
+     * translation is rarely the same width: anchoring a centred label at its left edge
+     * leaves a shorter Korean string sitting off to one side. A bottom-tab label is the
+     * visible case — 북마크 drifted left of the icon it belongs to.
      */
     private fun prepareFromInk(item: RenderItem): Prepared {
         val first = item.inkLines.first()
         val inkUnion = Rect(first)
         for (r in item.inkLines) inkUnion.union(r)
 
-        val left = first.left.toFloat()
-        val right = max(item.bounds.right, inkUnion.right)
-        val available = (right - left).toInt().coerceAtLeast(1)
+        val centred = isCentred(inkUnion, item.container) &&
+            // A wrap_content box hugs its text and can only say "centred"; one with room
+            // to spare has to agree, or this is an icon pushing left-aligned text right.
+            (item.bounds.width() < inkUnion.width() + 8 || isCentred(inkUnion, item.bounds))
 
-        var size = sizeForLineHeight(item.sourceLineHeight)
-        while (size > MIN_TEXT_PX) {
-            measurePaint.textSize = size
-            if (measurePaint.measureText(item.display) <= available) break
-            size -= 1f
+        val cx = inkUnion.exactCenterX()
+        val available = if (centred) {
+            // The widest run still centred on cx that the container holds.
+            (2f * min(cx - item.container.left, item.container.right - cx)).toInt()
+        } else {
+            max(item.bounds.right, inkUnion.right) - first.left
+        }.coerceAtLeast(1)
+
+        val source = sourceSize(item)
+        val fit = fitToWidth(item.display, available, source, item.inkLines.size, centred)
+        val size = fit.size
+        if (DEBUG_SIZE) {
+            logd(
+                "size '${item.display.take(12)}' em=${item.sourceEmSize} " +
+                    "lh=${item.sourceLineHeight} source=$source final=$size " +
+                    "avail=$available lines=${fit.layout?.lineCount ?: 1}/${item.inkLines.size}"
+            )
         }
         measurePaint.textSize = size
-        val fitsOneLine = measurePaint.measureText(item.display) <= available
+        val width = measurePaint.measureText(item.display)
 
         textPaint.textSize = size
         val fm = textPaint.fontMetrics
 
         val band = Rect(inkUnion)
-        band.left = (left - GLYPH_PAD).toInt()
 
-        if (fitsOneLine) {
+        if (fit.layout == null) {
             // Line top == the source's line top, so our text lands on its line.
             val baseline = first.top - fm.top
-            val width = measurePaint.measureText(item.display)
+            val left = if (centred) cx - width / 2f else first.left.toFloat()
+            band.left = min(inkUnion.left, (left - GLYPH_PAD).toInt())
             band.right = max(inkUnion.right, (left + width + GLYPH_PAD).toInt())
             band.bottom = max(inkUnion.bottom, (baseline + fm.bottom).toInt())
+            confine(band, inkUnion, item)
             return Prepared(
-                item.bounds, band, left, size, item.translated,
-                item.display, baseline, null, 0f, washNode = false,
+                item.bounds, band, left, size,
+                item.display, baseline, null, 0f, washNode = false, wash = item.bounds,
+                washColor = NODE_BG,
+                bandColor = item.colors?.bg ?: GLYPH_BG, textColor = textColorFor(item),
             )
         }
 
-        val layout = buildLayout(item.display, available, size)
+        val layout = fit.layout
+        val layoutLeft = if (centred) cx - available / 2f else first.left.toFloat()
         val top = first.top.toFloat()
         var widest = 0f
         for (i in 0 until layout.lineCount) widest = max(widest, layout.getLineWidth(i))
-        band.right = max(inkUnion.right, (left + widest + GLYPH_PAD).toInt())
+        // Centred lines sit in the middle of the layout box, not at its edge.
+        val inkLeft = if (centred) cx - widest / 2f else layoutLeft
+        band.left = min(inkUnion.left, (inkLeft - GLYPH_PAD).toInt())
+        band.right = max(inkUnion.right, (inkLeft + widest + GLYPH_PAD).toInt())
         band.bottom = max(inkUnion.bottom, (top + layout.height).toInt())
+        confine(band, inkUnion, item)
         return Prepared(
-            item.bounds, band, left, size, item.translated,
-            null, 0f, layout, top, washNode = false,
+            item.bounds, band, layoutLeft, size,
+            null, 0f, layout, top, washNode = false, wash = item.bounds,
+            washColor = NODE_BG,
+            bandColor = item.colors?.bg ?: GLYPH_BG, textColor = textColorFor(item),
         )
     }
 
+    /**
+     * A white band on a white page is invisible however far it runs, but one painted in
+     * the source's own colour is not: a pink band that overshoots its button leaves a
+     * pink rectangle sticking out of the corner. So a coloured band is held inside the
+     * node box — the widget the colour came from — while still covering all of the ink.
+     */
+    private fun confine(band: Rect, inkUnion: Rect, item: RenderItem) {
+        if (item.colors == null) return
+        band.intersect(item.bounds)
+        band.union(inkUnion)
+    }
+
+    /**
+     * Pending text is the Japanese source, and drawing it in the source's own ink would
+     * be indistinguishable from no overlay at all, so it is faded toward the surface —
+     * the same signal the grey-on-white default gives.
+     */
+    private fun textColorFor(item: RenderItem): Int {
+        val c = item.colors ?: return if (item.translated) TEXT_DONE else TEXT_PENDING
+        return if (item.translated) c.ink else blend(c.ink, c.bg, 0.45f)
+    }
+
+    /** [t] of the way from [from] to [to]. */
+    private fun blend(from: Int, to: Int, t: Float): Int = Color.rgb(
+        (Color.red(from) + (Color.red(to) - Color.red(from)) * t).toInt(),
+        (Color.green(from) + (Color.green(to) - Color.green(from)) * t).toInt(),
+        (Color.blue(from) + (Color.blue(to) - Color.blue(from)) * t).toInt(),
+    )
+
+    /**
+     * Equal slack on both sides of [box], and enough of it to be a decision rather than
+     * padding. The tolerance scales with the box so a wide one is not held to a pixel.
+     */
+    private fun isCentred(ink: Rect, box: Rect): Boolean {
+        val l = ink.left - box.left
+        val r = box.right - ink.right
+        val tol = (box.width() * 0.03f).coerceIn(2f, 12f)
+        return l > tol && r > tol && abs(l - r) <= tol
+    }
+
     /** Estimate from the node box. Only reached for text the API would not describe. */
-    private fun prepareFromBox(item: RenderItem, groupSize: Map<Int, Float>): Prepared {
+    private fun prepareFromBox(
+        item: RenderItem,
+        scale: List<Float>,
+        body: Float,
+    ): Prepared {
         val w = item.bounds.width()
         val h = item.bounds.height()
-        val (natural, fitsOneLine) = estimatedSize(item)
-        val size = if (fitsOneLine) min(natural, groupSize[h] ?: natural) else natural
+        val base = estimatedSize(item, scale, body)
+        val fit = fitToWidth(item.display, w, base, sourceLines = 1, centred = false)
+        val size = fit.size
+        if (DEBUG_SIZE) {
+            logd(
+                "box  '${item.display.take(12)}' h=$h w=$w raw=${h * HEIGHT_RATIO} " +
+                    "body=$body base=$base final=$size scale=$scale"
+            )
+        }
 
         textPaint.textSize = size
         val fm = textPaint.fontMetrics
-        val left = item.bounds.left.toFloat()
+        val left = sourceLeft(item, size) ?: item.bounds.left.toFloat()
 
-        if (fitsOneLine) {
+        if (fit.layout == null) {
             // Centre on top..bottom, not ascent..descent: TextView defaults to
             // includeFontPadding=true and uses the former, and centring the latter put
             // text ~0.075em high — a measured 3px at 36px.
             val lineH = fm.bottom - fm.top
             val baseline = item.bounds.top + (h - lineH) / 2f - fm.top
-            val band = Rect(item.bounds.left, (baseline + fm.top).toInt(), item.bounds.right, (baseline + fm.bottom).toInt())
+            measurePaint.textSize = size
+            val wash = washFor(item, left, measurePaint.measureText(item.display), size)
+            val band = Rect(wash.left, (baseline + fm.top).toInt(), wash.right, (baseline + fm.bottom).toInt())
             return Prepared(
-                item.bounds, band, left, size, item.translated,
-                item.display, baseline, null, 0f, washNode = true,
+                item.bounds, band, left, size,
+                item.display, baseline, null, 0f, washNode = true, wash = wash,
+                washColor = item.colors?.bg ?: NODE_BG,
+                bandColor = item.colors?.bg ?: GLYPH_BG, textColor = textColorFor(item),
             )
         }
 
-        var best: StaticLayout? = null
-        var bestSize = MIN_TEXT_PX
-        var s = (h * HEIGHT_RATIO).coerceIn(MIN_TEXT_PX, MAX_TEXT_PX)
-        while (s >= MIN_TEXT_PX) {
-            val l = buildLayout(item.display, w, s)
-            if (l.height <= h) {
-                best = l
-                bestSize = s
-                break
-            }
-            s -= 1f
-        }
-        val layout = best ?: buildLayout(item.display, w, MIN_TEXT_PX)
+        val layout = fit.layout
         val top = item.bounds.top + (h - layout.height) / 2f
-        val band = Rect(item.bounds.left, top.toInt(), item.bounds.right, (top + layout.height).toInt())
+        var widest = 0f
+        for (i in 0 until layout.lineCount) widest = max(widest, layout.getLineWidth(i))
+        val wash = washFor(item, left, widest, size)
+        val band = Rect(wash.left, top.toInt(), wash.right, (top + layout.height).toInt())
         return Prepared(
-            item.bounds, band, left, bestSize, item.translated,
-            null, 0f, layout, top, washNode = true,
+            item.bounds, band, left, size,
+            null, 0f, layout, top, washNode = true, wash = wash,
+            washColor = item.colors?.bg ?: NODE_BG,
+            bandColor = item.colors?.bg ?: GLYPH_BG, textColor = textColorFor(item),
         )
     }
 
-    /** Start at 0.62 x box height, step down until it fits. Returns whether it does. */
-    private fun estimatedSize(item: RenderItem): Pair<Float, Boolean> {
-        val w = item.bounds.width()
-        val h = item.bounds.height()
-        var size = (h * HEIGHT_RATIO).coerceIn(MIN_TEXT_PX, MAX_TEXT_PX)
-        while (size > MIN_TEXT_PX) {
-            measurePaint.textSize = size
-            if (measurePaint.measureText(item.display) <= w) break
-            size -= 1f
-        }
+    /**
+     * Where the source's text starts inside its node box, or null if that is unknown and
+     * the box's own left edge will have to do.
+     *
+     * A search field draws its magnifier as a compound drawable of the EditText, so the
+     * icon sits inside the box the fallback path covers, and painting the whole box
+     * erases it. [RenderItem.inkRight] says where the box's content ends; the Japanese is
+     * left-aligned and its width is measurable, so subtracting one from the other gives
+     * where it began. Whatever is left of that is the icon, and goes untouched.
+     */
+    private fun sourceLeft(item: RenderItem, size: Float): Float? {
+        if (item.inkRight <= item.bounds.left) return null
         measurePaint.textSize = size
-        return size to (measurePaint.measureText(item.display) <= w)
+        val left = item.inkRight - measurePaint.measureText(item.source)
+        return left.coerceIn(item.bounds.left.toFloat(), item.bounds.right.toFloat())
+    }
+
+    /**
+     * The box to paint over: from where the source's text began to wherever the source
+     * and the translation end, whichever runs further.
+     *
+     * Widened half a character to the left, because the source's width is measured in our
+     * font rather than the one it was drawn in and a few pixels either way would leave a
+     * sliver of Japanese showing. Half a character still clears the gap a leading icon
+     * leaves — measured at about two thirds of one.
+     */
+    private fun washFor(item: RenderItem, left: Float, width: Float, size: Float): Rect {
+        val b = item.bounds
+        if (item.inkRight <= b.left) return b
+        return Rect(
+            (left - size * WASH_SLACK).toInt().coerceAtLeast(b.left),
+            b.top,
+            max(item.inkRight, (left + width + GLYPH_PAD).toInt()).coerceAtMost(b.right),
+            b.bottom,
+        )
+    }
+
+    /**
+     * A size for a box whose text we could not measure — in practice an EditText hint,
+     * which the character-location API cannot describe because a hint is not the text.
+     *
+     * The box height barely constrains this. Two hint fields of the same drawn height sat
+     * in boxes reported as 56px and 132px, so 0.62 x height put one at 37 and the other
+     * at 82, and the taller one then snapped onto the section-header size — a placeholder
+     * set larger than the heading above it.
+     *
+     * A hint is body text, so [body] is the better answer outright, and the height is
+     * asked only whether it could possibly hold that: a line box runs about 1.5 x its
+     * font size, so a box shorter than that is genuinely small text and gets the ratio.
+     */
+    private fun estimatedSize(item: RenderItem, scale: List<Float>, body: Float): Float {
+        val h = item.bounds.height()
+        if (body > 0f && h >= body * LINE_BOX_RATIO) return body
+        return snapToScale((h * HEIGHT_RATIO).coerceIn(MIN_TEXT_PX, MAX_TEXT_PX), scale)
+    }
+
+    /** The chosen size, and the layout that made it fit — null when one line was enough. */
+    private class Fit(val size: Float, val layout: StaticLayout?)
+
+    /**
+     * Fit the translation into [available] without letting it go a size of its own.
+     *
+     * Korean runs longer than Japanese far more often than not — 小顔ヘア becomes 얼굴 작아
+     * 보이는 헤어 — so something has to give on the strings that outgrow their box. Giving
+     * on size, one pixel at a time, is what made the screen look ragged: the short labels
+     * kept the source's 37px while their neighbours dropped to 24, 22, 14, each to its own
+     * arbitrary value.
+     *
+     * So wrapping gives first. The source usually wraps too, and its own line count says
+     * how much room the layout expected to spend here, so one line beyond that is granted
+     * before size is touched at all. Most strings never shrink under this rule.
+     *
+     * When even that is not enough, size steps down through [SHRINK_STEPS] rather than
+     * sliding. Two labels that both had to shrink land on the same value instead of on
+     * neighbouring ones, which is what reads as deliberate. The last step is used whether
+     * it fits or not: past that the text is small enough to be worse than an overflow.
+     */
+    private fun fitToWidth(
+        text: String,
+        available: Int,
+        source: Float,
+        sourceLines: Int,
+        centred: Boolean,
+    ): Fit {
+        // A box with no room for even a few characters is one the screen edge cut off, not
+        // a box the text has to be made to fit: the Japanese in it is half cut off too.
+        // Wrapping such a box stacks the translation one character to a line, so let it
+        // run off the edge instead and be clipped exactly where the source was.
+        if (available < source * MIN_FIT_EMS) return Fit(source, null)
+
+        val maxLines = sourceLines + EXTRA_LINES
+        for ((i, scale) in SHRINK_STEPS.withIndex()) {
+            val size = (source * scale).coerceAtLeast(MIN_TEXT_PX)
+            measurePaint.textSize = size
+            if (measurePaint.measureText(text) <= available) return Fit(size, null)
+            val layout = buildLayout(text, available, size, centred)
+            if (layout.lineCount <= maxLines || i == SHRINK_STEPS.lastIndex) {
+                return Fit(size, layout)
+            }
+        }
+        error("SHRINK_STEPS must not be empty")
+    }
+
+    /**
+     * The size to draw the translation at, matching the Japanese it replaces.
+     *
+     * The measured em is the answer wherever it exists. It is missing only for a string
+     * with no full-width character to measure — half-width katakana on its own — so the
+     * old line-height inversion stays as the fallback for those. It is the weaker of the
+     * two: the source's line height includes whatever lineSpacing its widget was given,
+     * and inverting it through *our* font metrics assumes the source draws in the same
+     * typeface. Both assumptions fail quietly, and unevenly, from one widget to the next.
+     */
+    private fun sourceSize(item: RenderItem): Float {
+        val em = item.sourceEmSize
+        if (em > 0f) return em.coerceAtLeast(MIN_TEXT_PX)
+        return sizeForLineHeight(item.sourceLineHeight)
+    }
+
+    /**
+     * Pull [estimate] onto [scale] when it is close enough to one of its sizes.
+     *
+     * Left alone when nothing is near, so a genuinely odd box keeps an honest guess
+     * rather than being dragged to a size it was never drawn at.
+     */
+    private fun snapToScale(estimate: Float, scale: List<Float>): Float {
+        val nearest = scale.minByOrNull { abs(it - estimate) } ?: return estimate
+        return if (abs(nearest - estimate) <= estimate * SNAP_TOLERANCE) nearest else estimate
     }
 
     /** Font metrics scale linearly with size, so one measurement inverts the relation. */
@@ -218,11 +446,18 @@ class OverlayView(context: Context) : View(context) {
         return (target * 100f / at100).coerceAtLeast(MIN_TEXT_PX)
     }
 
-    private fun buildLayout(text: String, width: Int, size: Float): StaticLayout {
+    private fun buildLayout(
+        text: String,
+        width: Int,
+        size: Float,
+        centred: Boolean = false,
+    ): StaticLayout {
         val p = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = size }
         return StaticLayout.Builder
             .obtain(text, 0, text.length, p, width.coerceAtLeast(1))
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setAlignment(
+                if (centred) Layout.Alignment.ALIGN_CENTER else Layout.Alignment.ALIGN_NORMAL
+            )
             // Matches the single-line path and TextView's own default.
             .setIncludePad(true)
             .build()
@@ -248,15 +483,17 @@ class OverlayView(context: Context) : View(context) {
 
         for (p in prepared) {
             if (p.washNode) {
-                fillPaint.color = if (DEBUG_GRID) Color.WHITE else NODE_BG
-                canvas.drawRect(p.bounds, fillPaint)
+                fillPaint.color = if (DEBUG_GRID) Color.WHITE else p.washColor
+                canvas.drawRect(p.wash, fillPaint)
             }
 
-            fillPaint.color = GLYPH_BG
+            fillPaint.color = if (DEBUG_GRID) GLYPH_BG else p.bandColor
             canvas.drawRect(p.band, fillPaint)
 
             textPaint.textSize = p.textSize
-            textPaint.color = if (p.translated) TEXT_DONE else TEXT_PENDING
+            // measure.py looks for dark ink on white, so the debug pass keeps the
+            // default colours whatever the source was drawn in.
+            textPaint.color = if (DEBUG_GRID) TEXT_DONE else p.textColor
 
             val single = p.single
             if (single != null) {

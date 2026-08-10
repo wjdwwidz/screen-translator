@@ -11,8 +11,27 @@ object TextCollector {
 
     private const val MAX_NODES = 4000
 
-    /** Ink geometry relative to the node's top-left, which scrolling does not change. */
-    private class InkGeom(val lines: List<Rect>, val lineHeight: Float)
+    /**
+     * Ink geometry relative to the node's top-left, which scrolling does not change.
+     *
+     * [emSize] is the source's font size in pixels, or 0 when it could not be read;
+     * see [emSize] for why a character's width gives it and [lineHeight] does not.
+     */
+    private class InkGeom(val lines: List<Rect>, val lineHeight: Float, val emSize: Float)
+
+    /**
+     * A node plus the boxes needed to say how its text is aligned.
+     *
+     * getParent() is a round trip into the app, and we are already walking downwards,
+     * so the ancestry rides along on the stack instead. [inherited] carries the nearest
+     * ancestor that was actually wider than the node it wrapped, which is what a chain
+     * of hugging wrap_content wrappers would otherwise hide.
+     */
+    private class Frame(
+        val node: AccessibilityNodeInfo,
+        val parentBounds: Rect?,
+        val inherited: Rect?,
+    )
 
     /**
      * refreshWithExtraData is a synchronous call into the app's process and costs
@@ -43,17 +62,26 @@ object TextCollector {
         val seen = HashSet<String>(64)
         var visited = 0
 
-        val stack = ArrayDeque<AccessibilityNodeInfo>()
-        stack.addLast(root)
+        val stack = ArrayDeque<Frame>()
+        stack.addLast(Frame(root, null, null))
 
         while (stack.isNotEmpty() && visited < MAX_NODES) {
-            val node = stack.removeLast()
+            val frame = stack.removeLast()
+            val node = frame.node
             visited++
 
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            // A parent that merely hugs its child says nothing about alignment, so keep
+            // looking up until one has slack in it.
+            val container = when {
+                frame.parentBounds != null && frame.parentBounds.width() > r.width() + 2 ->
+                    frame.parentBounds
+                else -> frame.inherited ?: r
+            }
+
             val text = node.text?.toString()?.trim()
-            if (!text.isNullOrEmpty() && containsJapanese(text)) {
-                val r = Rect()
-                node.getBoundsInScreen(r)
+            if (!text.isNullOrEmpty() && worthTranslating(text)) {
                 if (isDrawable(r, screenW, screenH)) {
                     // Same string at the same spot can appear twice (e.g. a label and
                     // its wrapper both carrying text); drawing it twice just darkens it.
@@ -64,13 +92,18 @@ object TextCollector {
                         val lines = geom?.lines?.map {
                             Rect(it.left + r.left, it.top + r.top, it.right + r.left, it.bottom + r.top)
                         } ?: emptyList()
-                        out.add(TextItem(text, r, lines, geom?.lineHeight ?: 0f))
+                        out.add(
+                            TextItem(
+                                text, r, lines,
+                                geom?.lineHeight ?: 0f, geom?.emSize ?: 0f, container,
+                            )
+                        )
                     }
                 }
             }
 
             for (i in 0 until node.childCount) {
-                node.getChild(i)?.let { stack.addLast(it) }
+                node.getChild(i)?.let { stack.addLast(Frame(it, r, container)) }
             }
         }
 
@@ -130,11 +163,18 @@ object TextCollector {
             ?.getParcelableArray(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY)
             ?: return null
 
-        // Characters scrolled out of view or clipped come back degenerate.
-        val chars = raw.filterIsInstance<RectF>().filter {
-            it.width() > 0f && it.height() > 0f &&
-                it.right > 0f && it.bottom > 0f &&
-                it.left < screenW && it.top < screenH
+        // Characters scrolled out of view or clipped come back degenerate. Index is kept
+        // rather than filtered away, because reading a width means knowing which
+        // character of [text] it belongs to.
+        val chars = ArrayList<RectF>(raw.size)
+        val fullWidths = ArrayList<Float>(raw.size)
+        for (i in raw.indices) {
+            val c = raw[i] as? RectF ?: continue
+            if (c.width() <= 0f || c.height() <= 0f) continue
+            if (c.right <= 0f || c.bottom <= 0f) continue
+            if (c.left >= screenW || c.top >= screenH) continue
+            chars.add(c)
+            if (i < text.length && isFullWidth(text[i])) fullWidths.add(c.width())
         }
         if (chars.isEmpty()) return null
 
@@ -158,7 +198,45 @@ object TextCollector {
                 cur.union(box)
             }
         }
-        return InkGeom(lines, lineHeight)
+        return InkGeom(lines, lineHeight, emSize(fullWidths, lineHeight))
+    }
+
+    /**
+     * The source's font size in pixels, read off the width of its own glyphs.
+     *
+     * Kana and ideographs are laid out on a full em square, so a full-width character's
+     * advance *is* the font size. Height cannot do this job: the rects come back with
+     * the line's top and bottom, so their height carries the widget's lineSpacing as
+     * well, and inverting it also assumes the source draws in the same typeface we do.
+     * Width is free of both.
+     *
+     * Widths far from the line height are dropped before the median: the last character
+     * of a wrapped line can measure to the line end rather than to its own advance, and
+     * on a two-character label one such outlier would otherwise be the median. Ordinary
+     * fonts put an em somewhere near 0.6-0.9 of the line box, so the window is wide
+     * enough to keep every honest sample.
+     */
+    private fun emSize(widths: List<Float>, lineHeight: Float): Float {
+        val plausible = widths.filter { it > lineHeight * 0.35f && it < lineHeight * 1.2f }
+        if (plausible.isEmpty()) return 0f
+        return plausible.sorted()[plausible.size / 2]
+    }
+
+    /**
+     * Strings with no Japanese in them — "10", "¥5,500", "OPEN" — are left alone:
+     * covering them would only clutter the screen and waste engine calls.
+     *
+     * Katakana-only strings are left alone too, unless the glossary knows them. They are
+     * loanwords, the engine mistranslates about half of them, and its failure mode is
+     * confident nonsense — "프랑스 쾅" over フレンチバング. The source is the better
+     * answer there: it is at least the term the user is looking at. See [isKatakanaOnly].
+     * Deciding here rather than in the translator keeps our pixels off those labels
+     * entirely, so the app's own rendering shows through untouched.
+     */
+    private fun worthTranslating(text: String): Boolean {
+        if (!containsJapanese(text)) return false
+        if (isKatakanaOnly(text) && Glossary.lookup(text) == null) return false
+        return true
     }
 
     private fun isDrawable(r: Rect, screenW: Int, screenH: Int): Boolean {

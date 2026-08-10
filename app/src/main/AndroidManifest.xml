@@ -1,10 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+      Package visibility, API 30+. We need to resolve two things about apps other than
+      our own: their name, for the per-app switch list, and whether they have a launcher
+      entry, which is how JapaneseScout tells a real app from the system UI or a keyboard.
+      Declaring the launcher intent covers exactly those apps. QUERY_ALL_PACKAGES would
+      also work and is both wider than we need and restricted on Play.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:label="@string/app_name"
         android:supportsRtl="false"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
             android:name=".MainActivity"
