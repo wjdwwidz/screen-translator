@@ -37,6 +37,15 @@ object ColorSampler {
     /** Squared RGB distance. Roughly 50 per channel — below it there is no text to see. */
     private const val MIN_CONTRAST = 3 * 50 * 50
 
+    /** Lower bar than [MIN_CONTRAST]: this only asks whether a pixel is bare surface. */
+    private const val MIN_INK_CONTRAST = 3 * 24 * 24
+
+    /** Fraction of a box's height ignored top and bottom; see [contentRight]. */
+    private const val MIDDLE_INSET = 0.25f
+
+    /** Columns this close to a box's edge are its own outline, not its content. */
+    private const val EDGE_SKIP = 3
+
     private const val OPAQUE = 0xFF shl 24
 
     /** Used only where the glyph colour could not be read; see [sampleSurface]. */
@@ -73,15 +82,25 @@ object ColorSampler {
                     }
                     var got = 0
                     val out = items.map { item ->
-                        val colors = if (item.hasInk) {
+                        if (item.hasInk) {
                             val box = Rect(item.inkLines.first())
                             for (r in item.inkLines) box.union(r)
-                            sampleAt(bmp, box, item.text)
+                            val colors = sampleAt(bmp, box, item.text)
+                            if (colors != null) got++
+                            item.copy(colors = colors)
                         } else {
-                            sampleSurface(bmp, item.bounds, item.text)
+                            val bg = surfaceOf(bmp, item.bounds)
+                            if (bg == null && LOG_MISSES) {
+                                logi("no colour \"${item.text}\": no flat surface in the node box")
+                            }
+                            if (bg != null) got++
+                            item.copy(
+                                colors = bg?.let {
+                                    SourceColors(it, if (isLight(it)) DARK_INK else LIGHT_INK)
+                                },
+                                inkRight = bg?.let { contentRight(bmp, item.bounds, it) } ?: 0,
+                            )
                         }
-                        if (colors != null) got++
-                        item.copy(colors = colors)
                     }
                     bmp.recycle()
                     logi("coloured $got/${items.size} items")
@@ -146,21 +165,46 @@ object ColorSampler {
     }
 
     /**
-     * The fallback path's version: background only, from the node box.
+     * The x where whatever the box draws ends, in screen coordinates, or 0 if nothing
+     * stands out from the surface.
      *
-     * Without an ink box there is nowhere to look for the glyphs, so their colour cannot
-     * be read — the node box holds icons and padding as well as text, and whatever
-     * stands furthest from the surface in there is as likely to be an icon. But the
-     * surface itself is still the box's most common colour, and that alone is what stops
-     * the node-wide wash from being a white patch on a coloured widget. The text colour
-     * is then simply whichever of black or white reads on that surface.
+     * The fallback path covers a whole node box, because with no ink box it does not know
+     * where inside that box the source's text sits. That is fine for a plain field and
+     * wrong for a search field, whose magnifier is a compound drawable of the EditText
+     * itself and so lives inside the very box being covered — the icon disappears under
+     * the translation.
+     *
+     * The text's own left edge cannot be read off the pixels directly: the gap after a
+     * leading icon is not reliably wider than the gap around a 「・」. Its right edge can,
+     * and that is enough, because the caller knows how wide the source string is and can
+     * subtract. Anything left of that is the icon, and stays uncovered.
+     *
+     * Only the middle rows are read. A field's corners are rounded, so its top and bottom
+     * rows carry the colour behind it, and every column would otherwise look occupied.
      */
-    private fun sampleSurface(bmp: Bitmap, bounds: Rect, text: String): SourceColors? {
-        val bg = surfaceOf(bmp, bounds) ?: run {
-            if (LOG_MISSES) logi("no colour \"$text\": no flat surface in the node box")
-            return null
+    private fun contentRight(bmp: Bitmap, bounds: Rect, bg: Int): Int {
+        val x0 = bounds.left.coerceIn(0, bmp.width - 1)
+        val x1 = bounds.right.coerceIn(x0 + 1, bmp.width)
+        val inset = (bounds.height() * MIDDLE_INSET).toInt()
+        val y0 = (bounds.top + inset).coerceIn(0, bmp.height - 1)
+        val y1 = (bounds.bottom - inset).coerceIn(y0 + 1, bmp.height)
+        val w = x1 - x0
+        val h = y1 - y0
+        if (w < 8 || h < 2) return 0
+
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, x0, y0, w, h)
+        // An outlined field would otherwise report its own right edge, so the outermost
+        // columns do not count; a glyph never reaches them anyway.
+        for (x in w - 1 - EDGE_SKIP downTo EDGE_SKIP) {
+            var lit = 0
+            for (y in 0 until h) {
+                if (dist(px[y * w + x] or OPAQUE, bg) >= MIN_INK_CONTRAST) lit++
+            }
+            // Two rows, so a single antialiased pixel is not mistaken for a stroke.
+            if (lit >= 2) return x0 + x + 1
         }
-        return SourceColors(bg, if (isLight(bg)) DARK_INK else LIGHT_INK)
+        return 0
     }
 
     /** Most common colour in [box], or null if nothing is common enough to be a surface. */

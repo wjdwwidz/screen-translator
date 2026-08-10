@@ -120,10 +120,15 @@ class TranslatorService : AccessibilityService() {
      */
     private fun carryColours(fresh: List<TextItem>): List<TextItem> {
         if (lastItems.isEmpty()) return fresh
-        val known = HashMap<String, SourceColors>(lastItems.size)
-        for (item in lastItems) item.colors?.let { known[colourKey(item)] = it }
+        // Both halves of what the screenshot found, so a scroll does not put a covered
+        // search icon back for the 450ms until the next settle pass.
+        val known = HashMap<String, TextItem>(lastItems.size)
+        for (item in lastItems) if (item.colors != null) known[colourKey(item)] = item
         if (known.isEmpty()) return fresh
-        return fresh.map { it.copy(colors = known[colourKey(it)]) }
+        return fresh.map {
+            val seen = known[colourKey(it)] ?: return@map it
+            it.copy(colors = seen.colors, inkRight = seen.inkRight)
+        }
     }
 
     private fun colourKey(item: TextItem) =
@@ -159,7 +164,8 @@ class TranslatorService : AccessibilityService() {
                 val ko = translator.translateOrNull(item.text)
                 RenderItem(
                     ko ?: item.text, item.bounds, ko != null,
-                    item.inkLines, item.sourceLineHeight, item.container, item.colors,
+                    item.inkLines, item.sourceLineHeight, item.sourceEmSize,
+                    item.container, item.colors, item.text, item.inkRight,
                 )
             }
         )

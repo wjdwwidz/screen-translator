@@ -8,11 +8,11 @@ import android.graphics.Rect
  * therefore in display coordinates, not overlay-window coordinates — OverlayView
  * does the conversion at draw time.
  *
- * [inkLines] and [sourceLineHeight] come from the character-location API and describe
- * where the Japanese actually sits, which is often nowhere near the node box: a
- * button's label is centred, and a drawableStart icon pushes the text right. Both are
- * absent for text the API cannot describe (EditText hints), in which case OverlayView
- * falls back to estimating from the box.
+ * [inkLines], [sourceLineHeight] and [sourceEmSize] come from the character-location API
+ * and describe where the Japanese actually sits and how big it is, which is often nowhere
+ * near what the node box suggests: a button's label is centred, and a drawableStart icon
+ * pushes the text right. They are absent for text the API cannot describe (EditText
+ * hints), in which case OverlayView falls back to estimating from the box.
  *
  * [container] is the nearest ancestor box wider than this node — the space the text was
  * laid out in. It is what tells centred text apart from left-aligned text: a bottom-tab
@@ -24,9 +24,17 @@ data class TextItem(
     val bounds: Rect,
     val inkLines: List<Rect> = emptyList(),
     val sourceLineHeight: Float = 0f,
+    /** The source's font size in px, or 0 where its glyphs could not be measured. */
+    val sourceEmSize: Float = 0f,
     val container: Rect = bounds,
     /** Filled in by the settle pass's screenshot; null where it was not trustworthy. */
     val colors: SourceColors? = null,
+    /**
+     * Where the node box's content ends, read off the same screenshot; 0 if unread.
+     * Only collected for boxes with no ink, which are the only ones that need it — see
+     * ColorSampler.contentRight.
+     */
+    val inkRight: Int = 0,
 ) {
     val hasInk get() = inkLines.isNotEmpty() && sourceLineHeight > 0f
 }

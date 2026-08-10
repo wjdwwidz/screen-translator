@@ -25,6 +25,29 @@ fun containsJapanese(s: String): Boolean {
 }
 
 /**
+ * True if [ch] is drawn on a full em square — one whose advance width equals the font
+ * size exactly.
+ *
+ * This is what lets the source's font size be read off a character's measured width.
+ * Deliberately narrower than [containsJapanese]: half-width katakana (0xFF66..0xFF9D)
+ * is Japanese but advances half an em, and sampling it would halve the size we derive.
+ * Kana and ideographs are the reliable core, and a Japanese string without either is
+ * rare enough to leave to the caller's fallback.
+ */
+fun isFullWidth(ch: Char): Boolean {
+    val c = ch.code
+    return when {
+        c in 0x3040..0x309F -> true // hiragana
+        c in 0x30A0..0x30FF -> true // katakana
+        c in 0x31F0..0x31FF -> true // katakana phonetic extensions
+        c in 0x3400..0x4DBF -> true // CJK unified ideographs extension A
+        c in 0x4E00..0x9FFF -> true // CJK unified ideographs
+        c in 0xF900..0xFAFF -> true // CJK compatibility ideographs
+        else -> false
+    }
+}
+
+/**
  * True if the string is katakana and nothing else — no hiragana, no kanji.
  *
  * Katakana on its own is nearly always a loanword, and loanwords are where the

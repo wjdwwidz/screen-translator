@@ -11,8 +11,13 @@ object TextCollector {
 
     private const val MAX_NODES = 4000
 
-    /** Ink geometry relative to the node's top-left, which scrolling does not change. */
-    private class InkGeom(val lines: List<Rect>, val lineHeight: Float)
+    /**
+     * Ink geometry relative to the node's top-left, which scrolling does not change.
+     *
+     * [emSize] is the source's font size in pixels, or 0 when it could not be read;
+     * see [emSize] for why a character's width gives it and [lineHeight] does not.
+     */
+    private class InkGeom(val lines: List<Rect>, val lineHeight: Float, val emSize: Float)
 
     /**
      * A node plus the boxes needed to say how its text is aligned.
@@ -87,7 +92,12 @@ object TextCollector {
                         val lines = geom?.lines?.map {
                             Rect(it.left + r.left, it.top + r.top, it.right + r.left, it.bottom + r.top)
                         } ?: emptyList()
-                        out.add(TextItem(text, r, lines, geom?.lineHeight ?: 0f, container))
+                        out.add(
+                            TextItem(
+                                text, r, lines,
+                                geom?.lineHeight ?: 0f, geom?.emSize ?: 0f, container,
+                            )
+                        )
                     }
                 }
             }
@@ -153,11 +163,18 @@ object TextCollector {
             ?.getParcelableArray(AccessibilityNodeInfo.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY)
             ?: return null
 
-        // Characters scrolled out of view or clipped come back degenerate.
-        val chars = raw.filterIsInstance<RectF>().filter {
-            it.width() > 0f && it.height() > 0f &&
-                it.right > 0f && it.bottom > 0f &&
-                it.left < screenW && it.top < screenH
+        // Characters scrolled out of view or clipped come back degenerate. Index is kept
+        // rather than filtered away, because reading a width means knowing which
+        // character of [text] it belongs to.
+        val chars = ArrayList<RectF>(raw.size)
+        val fullWidths = ArrayList<Float>(raw.size)
+        for (i in raw.indices) {
+            val c = raw[i] as? RectF ?: continue
+            if (c.width() <= 0f || c.height() <= 0f) continue
+            if (c.right <= 0f || c.bottom <= 0f) continue
+            if (c.left >= screenW || c.top >= screenH) continue
+            chars.add(c)
+            if (i < text.length && isFullWidth(text[i])) fullWidths.add(c.width())
         }
         if (chars.isEmpty()) return null
 
@@ -181,7 +198,28 @@ object TextCollector {
                 cur.union(box)
             }
         }
-        return InkGeom(lines, lineHeight)
+        return InkGeom(lines, lineHeight, emSize(fullWidths, lineHeight))
+    }
+
+    /**
+     * The source's font size in pixels, read off the width of its own glyphs.
+     *
+     * Kana and ideographs are laid out on a full em square, so a full-width character's
+     * advance *is* the font size. Height cannot do this job: the rects come back with
+     * the line's top and bottom, so their height carries the widget's lineSpacing as
+     * well, and inverting it also assumes the source draws in the same typeface we do.
+     * Width is free of both.
+     *
+     * Widths far from the line height are dropped before the median: the last character
+     * of a wrapped line can measure to the line end rather than to its own advance, and
+     * on a two-character label one such outlier would otherwise be the median. Ordinary
+     * fonts put an em somewhere near 0.6-0.9 of the line box, so the window is wide
+     * enough to keep every honest sample.
+     */
+    private fun emSize(widths: List<Float>, lineHeight: Float): Float {
+        val plausible = widths.filter { it > lineHeight * 0.35f && it < lineHeight * 1.2f }
+        if (plausible.isEmpty()) return 0f
+        return plausible.sorted()[plausible.size / 2]
     }
 
     /**
