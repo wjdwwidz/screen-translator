@@ -58,6 +58,16 @@ object Glossary {
         "サロンからの\nメッセージ" to "살롱에서 온 메시지",
         "利用開始" to "이용 시작",
 
+        // --- salon detail tabs, read off the screen ---
+        // Katakana with nothing else, so they are skipped as loanwords unless the
+        // glossary answers for them — see isKatakanaOnly and TextCollector's check.
+        // スタッフ and 口コミ beside them were already translated for that reason.
+        "フォト" to "사진",
+        "ブログ" to "블로그",
+        // This tab wraps to two lines and the break is in the string itself, so the
+        // exact-match key has to carry it too.
+        "クーポン・\nメニュー" to "쿠폰·메뉴",
+
         // --- UI labels read off real screens ---
         "ヘア" to "헤어",
         "ネイル" to "네일",
@@ -160,10 +170,6 @@ object Glossary {
         "電話番号" to "전화번호",
         "スタッフ" to "스태프",
         "口コミ" to "리뷰",
-        // Salon detail tabs. Katakana-only, so they are skipped as loanwords unless the
-        // glossary answers for them — see isKatakanaOnly and TextCollector's check.
-        "フォト" to "사진",
-        "ブログ" to "블로그",
         "地図" to "지도",
         "料金" to "요금",
         "メニュー" to "메뉴",
