@@ -12,13 +12,20 @@
 
 | 원본 | 오버레이 적용 |
 |---|---|
-| ![원본 일본어 화면](docs/images/before.png) | ![한국어 오버레이가 적용된 화면](docs/images/after.png) |
+| <img src="docs/images/before.png" alt="원본 일본어 화면" width="240"> | <img src="docs/images/after.png" alt="한국어 오버레이가 적용된 화면" width="240"> |
 
 카드가 격자로 늘어선 화면에서도 각 항목의 라벨 위치를 그대로 따라갑니다.
 
 | 스타일 검색 화면 | 앱 실행 화면 |
 |---|---|
-| ![스타일 검색 화면 오버레이](docs/images/styles.png) | ![권한 상태와 앱별 번역 목록이 있는 앱 실행 화면](docs/images/setup.png) |
+| <img src="docs/images/styles.png" alt="스타일 검색 화면 오버레이" width="240"> | <img src="docs/images/setup.png" alt="권한 상태와 앱별 번역 목록이 있는 앱 실행 화면" width="240"> |
+
+숫자와 글자가 촘촘히 섞인 화면에서도 각 값이 제자리를 지킵니다. 별점 막대의 수치, 항목별
+점수, 리뷰 본문이 원문과 같은 크기·같은 색으로 그려집니다.
+
+| 리뷰 화면 |
+|---|
+| <img src="docs/images/review.png" alt="별점 분포와 항목별 점수, 리뷰 본문이 번역된 화면" width="240"> |
 
 > 스크린샷의 대상 앱은 예시로 사용한 서드파티 [hot-pepper-beauty](https://play.google.com/store/apps/details?id=jp.hotpepper.android.beauty.hair&hl=ko)✨ 어플입니다.
 
@@ -40,7 +47,7 @@
 
 | 2번 — 새 앱을 찾았을 때 | 4번 — 켜지 않고 넘어간 앱 |
 |---|---|
-| ![새 일본어 앱을 찾아 번역을 켤지 묻는 바텀시트](docs/images/sheet.png) | ![두 앱 중 하나만 번역이 켜져 있는 앱별 번역 목록](docs/images/applist.png) |
+| <img src="docs/images/sheet.png" alt="새 일본어 앱을 찾아 번역을 켤지 묻는 바텀시트" width="240"> | <img src="docs/images/applist.png" alt="두 앱 중 하나만 번역이 켜져 있는 앱별 번역 목록" width="240"> |
 
 왼쪽에서 **나중에**를 눌러도 오른쪽 목록에는 행이 남습니다. 스위치가 꺼져 있으니
 그 앱에서는 번역이 동작하지 않고, 켜고 싶어지면 이 목록에서 켜면 됩니다.
