@@ -14,9 +14,17 @@ class TranslatorService : AccessibilityService() {
         /**
          * Asking the app where each character sits costs ~450ms for a screen of unseen
          * strings, so the debounced pass never does it. This second pass, which only
-         * runs once events stop, fills in what the cache could not answer.
+         * runs once events stop, fills in what the cache could not answer and reads the
+         * source's colours.
+         *
+         * It was 450ms, chosen when this pass only had to finish before the user noticed
+         * an unlocated box. It also gates the colours, and there the wait was most of the
+         * delay: measured 996ms from the first render to `coloured` on a 24-item list, of
+         * which 450ms was this timer idling. 200ms is still longer than the gap between
+         * the events a single scroll emits — every one of them reschedules this — so it
+         * does not fire mid-scroll, and it takes the same screen to 748ms.
          */
-        private const val SETTLE_MS = 450L
+        private const val SETTLE_MS = 200L
 
         @Volatile
         var running: Boolean = false
@@ -95,39 +103,93 @@ class TranslatorService : AccessibilityService() {
         logi("collected ${lastItems.size} items, $located located, probe=$probe (${"%.0f".format(ms)}ms)")
         render()
 
-        if (probe && ColorSampler.ENABLED && located > 0) sampleColors()
+        if (probe && ColorSampler.ENABLED && located > 0 && needsColours()) sampleColors()
 
-        // Anything still unlocated is either waiting on the settle pass or is text the
-        // API will not describe. Either way, one more attempt once the screen is quiet.
-        if (!probe && located < lastItems.size) {
+        // Scheduled whatever the walk found, where this used to ask for an unlocated box
+        // first. Probing is no longer the only thing the pass is for: it is also the only
+        // thing that reads colours, so gating it on the probe's own work left a screen the
+        // ink cache could answer in full with no screenshot at all, sitting in the default
+        // black-on-white for as long as it was up. Measured: re-entering a list already
+        // walked once collected 24 items, 24 located, and no `coloured` line ever followed.
+        //
+        // The pass this adds is the cheap one, since by definition nothing needs probing:
+        // measured 9-37ms, against 93-176ms when it has strings to look up. It only
+        // reaches the screenshot when [needsColours] says a colour is actually missing,
+        // so a re-entered screen costs the walk and nothing else.
+        if (!probe) {
             handler.removeCallbacks(settleTask)
             handler.postDelayed(settleTask, SETTLE_MS)
         }
     }
 
     /**
-     * Carries the last pass's colours onto the items just collected.
+     * Whether a screenshot would tell us anything we do not already know.
+     *
+     * The shot costs a blank frame — the overlay has to come down for it, measured 370-386ms
+     * from the probe pass to `coloured` — so it has to be earned. Once [colourCache] can
+     * answer for every item on screen there is nothing to earn it.
+     *
+     * The cost is that an item which changes colour without changing its text or its box
+     * — a tab going active — keeps the colour it was first read in. That is the same
+     * trade [colourCache] already makes, and it is bounded by the key: any change to
+     * either half re-reads. It becomes fixable for free once the shot no longer blinks.
+     */
+    private fun needsColours() = lastItems.any { it.colors == null }
+
+    /** What one screenshot learned about one item. See [colourCache] for the offsets. */
+    private class Sample(val colors: SourceColors, val spanLeft: Int, val spanRight: Int)
+
+    /**
+     * Every colour read this session, keyed and capped exactly like [TextCollector]'s ink
+     * cache — the screenshot is the expensive half of the same question that cache answers
+     * cheaply, so it has no business having a shorter memory.
+     *
+     * This used to be the previous pass's items and nothing more, which meant it only
+     * ever survived a scroll. Leaving a screen and coming back dropped every colour, and
+     * on a screen the ink cache could answer in full no shot followed to put them back.
+     *
+     * The span is held as an offset from the box's left edge rather than the screen
+     * coordinate [ColorSampler] returns. Same reasoning as the ink cache: the key pins the
+     * box's size, so across two sightings the box can only have been translated, and an
+     * offset survives that where an absolute x would be carried onto a node that has moved.
+     */
+    private val colourCache = object : LinkedHashMap<String, Sample>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Sample>) =
+            size > 400
+    }
+
+    /**
+     * Puts known colours onto the items just collected.
      *
      * A fresh walk of the tree knows no colours, so without this every content change
      * repaints in the default dark-on-white and only goes back to the source's colours
      * once the settle pass has taken its screenshot — a colour flash on every scroll
      * stop, on top of the blank one the screenshot already costs.
-     *
-     * Keyed by text and box size, the same key the ink cache uses, so a scrolled node
-     * keeps its colours. A node that changed colour without changing either — a tab
-     * going active — keeps the stale pair until the settle pass overwrites it, which is
-     * a far smaller artefact than the flash.
      */
     private fun carryColours(fresh: List<TextItem>): List<TextItem> {
-        if (lastItems.isEmpty()) return fresh
-        // Both halves of what the screenshot found, so a scroll does not put a covered
-        // search icon back for the 450ms until the next settle pass.
-        val known = HashMap<String, TextItem>(lastItems.size)
-        for (item in lastItems) if (item.colors != null) known[colourKey(item)] = item
-        if (known.isEmpty()) return fresh
-        return fresh.map {
-            val seen = known[colourKey(it)] ?: return@map it
-            it.copy(colors = seen.colors, inkLeft = seen.inkLeft, inkRight = seen.inkRight)
+        if (colourCache.isEmpty()) return fresh
+        return fresh.map { item ->
+            val seen = colourCache[colourKey(item)] ?: return@map item
+            val hasSpan = seen.spanRight > seen.spanLeft
+            item.copy(
+                colors = seen.colors,
+                inkLeft = if (hasSpan) item.bounds.left + seen.spanLeft else 0,
+                inkRight = if (hasSpan) item.bounds.left + seen.spanRight else 0,
+            )
+        }
+    }
+
+    /** Files what the screenshot just read, so the next sighting needs no screenshot. */
+    private fun rememberColours(items: List<TextItem>) {
+        for (item in items) {
+            val colors = item.colors ?: continue
+            // Only the no-ink path fills a span in; for the rest the two are left at 0.
+            val hasSpan = item.inkLeft > 0 && item.inkRight > item.inkLeft
+            colourCache[colourKey(item)] = Sample(
+                colors,
+                if (hasSpan) item.inkLeft - item.bounds.left else 0,
+                if (hasSpan) item.inkRight - item.bounds.left else 0,
+            )
         }
     }
 
@@ -139,7 +201,8 @@ class TranslatorService : AccessibilityService() {
      *
      * The screenshot composites our own overlay, so the overlay comes down for the
      * frame and the translations visibly blink. Nothing else can see past ourselves,
-     * and it only happens once a screen has settled.
+     * and it only happens once a screen has settled and [needsColours] has found
+     * something it cannot answer from [colourCache].
      */
     private fun sampleColors() {
         val snapshot = lastItems
@@ -149,7 +212,15 @@ class TranslatorService : AccessibilityService() {
                 handler.post {
                     // A new screen may have arrived while the shot was in flight; its
                     // items win, and rendering either way puts the overlay back up.
-                    if (lastItems === snapshot) lastItems = coloured
+                    //
+                    // Nothing is filed in that case either. The boxes came from the old
+                    // screen and the pixels from whatever was up when the shutter opened,
+                    // so the pairing is unsound — and this cache is read for the rest of
+                    // the session, where the carry it replaces was thrown away next pass.
+                    if (lastItems === snapshot) {
+                        lastItems = coloured
+                        rememberColours(coloured)
+                    }
                     render()
                 }
             }
