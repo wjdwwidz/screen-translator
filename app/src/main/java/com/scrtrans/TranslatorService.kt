@@ -127,7 +127,7 @@ class TranslatorService : AccessibilityService() {
         if (known.isEmpty()) return fresh
         return fresh.map {
             val seen = known[colourKey(it)] ?: return@map it
-            it.copy(colors = seen.colors, inkRight = seen.inkRight)
+            it.copy(colors = seen.colors, inkLeft = seen.inkLeft, inkRight = seen.inkRight)
         }
     }
 
@@ -165,7 +165,7 @@ class TranslatorService : AccessibilityService() {
                 RenderItem(
                     ko ?: item.text, item.bounds, ko != null,
                     item.inkLines, item.sourceLineHeight, item.sourceEmSize,
-                    item.container, item.colors, item.text, item.inkRight,
+                    item.container, item.colors, item.inkLeft, item.inkRight,
                 )
             }
         )

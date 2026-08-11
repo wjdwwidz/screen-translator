@@ -20,10 +20,12 @@ data class RenderItem(
     val container: Rect = bounds,
     /** The source's own colours, or null to draw the default dark-on-white. */
     val colors: SourceColors? = null,
-    /** The Japanese being replaced. Kept past translation so its width stays knowable. */
-    val source: String = display,
-    /** See TextItem.inkRight. */
+    /** See TextItem.inkLeft. */
+    val inkLeft: Int = 0,
     val inkRight: Int = 0,
 ) {
     val hasInk get() = inkLines.isNotEmpty() && sourceLineHeight > 0f
+
+    /** Whether the screenshot could say where inside [bounds] the source's text sits. */
+    val hasSpan get() = inkLeft > 0 && inkRight > inkLeft
 }

@@ -40,8 +40,16 @@ object ColorSampler {
     /** Lower bar than [MIN_CONTRAST]: this only asks whether a pixel is bare surface. */
     private const val MIN_INK_CONTRAST = 3 * 24 * 24
 
-    /** Fraction of a box's height ignored top and bottom; see [contentRight]. */
+    /** Fraction of a box's height ignored top and bottom; see [contentSpan]. */
     private const val MIDDLE_INSET = 0.25f
+
+    /**
+     * Fraction of a box's content read to learn the text's own colour, from the right —
+     * see [contentSpan]. Wide enough to hold whole glyphs, so the stroke's colour
+     * outnumbers the antialiased edges around it.
+     */
+    private const val INK_SAMPLE_SHARE = 5
+    private const val INK_SAMPLE_MIN = 8
 
     /** Columns this close to a box's edge are its own outline, not its content. */
     private const val EDGE_SKIP = 3
@@ -94,11 +102,13 @@ object ColorSampler {
                                 logi("no colour \"${item.text}\": no flat surface in the node box")
                             }
                             if (bg != null) got++
+                            val span = bg?.let { contentSpan(bmp, item.bounds, it) }
                             item.copy(
                                 colors = bg?.let {
                                     SourceColors(it, if (isLight(it)) DARK_INK else LIGHT_INK)
                                 },
-                                inkRight = bg?.let { contentRight(bmp, item.bounds, it) } ?: 0,
+                                inkLeft = span?.left ?: 0,
+                                inkRight = span?.right ?: 0,
                             )
                         }
                     }
@@ -164,9 +174,12 @@ object ColorSampler {
         return SourceColors(bg, inkColor)
     }
 
+    /** Where a node box's own text starts and ends, in screen coordinates. */
+    class Span(val left: Int, val right: Int)
+
     /**
-     * The x where whatever the box draws ends, in screen coordinates, or 0 if nothing
-     * stands out from the surface.
+     * The columns a node box's text occupies, or null if nothing stands out from the
+     * surface.
      *
      * The fallback path covers a whole node box, because with no ink box it does not know
      * where inside that box the source's text sits. That is fine for a plain field and
@@ -174,15 +187,27 @@ object ColorSampler {
      * itself and so lives inside the very box being covered — the icon disappears under
      * the translation.
      *
-     * The text's own left edge cannot be read off the pixels directly: the gap after a
-     * leading icon is not reliably wider than the gap around a 「・」. Its right edge can,
-     * and that is enough, because the caller knows how wide the source string is and can
-     * subtract. Anything left of that is the icon, and stays uncovered.
+     * Both edges are read here, and the left one is the point. Deriving it instead — right
+     * edge minus the width of the source string — cannot work, because that width has to
+     * be measured in *our* font at a size we only estimated, and the error is per
+     * character, so it multiplies by the length of the string. Measured on a 13-character
+     * hint: the source was drawn at em 36.7 and estimated at 35, and 1.7px a character put
+     * the derived start 22px right of the real one. No constant slack fixes that — too
+     * little leaves a sliver of the source showing, too much eats the icon.
+     *
+     * So the left edge is found by colour instead of by arithmetic. A leading icon cannot
+     * be told from the text by the gap after it — that gap is not reliably wider than the
+     * one around a 「・」 — but it can be told by what it is drawn in: the text's colour is
+     * read off the right end of the content, where there is no icon, and the text begins
+     * at the first column carrying that colour. Everything left of it is the icon.
+     *
+     * An icon drawn in the text's own colour is indistinguishable, and gets covered as
+     * before. Nothing here is worse than the whole-box wash it replaces.
      *
      * Only the middle rows are read. A field's corners are rounded, so its top and bottom
      * rows carry the colour behind it, and every column would otherwise look occupied.
      */
-    private fun contentRight(bmp: Bitmap, bounds: Rect, bg: Int): Int {
+    private fun contentSpan(bmp: Bitmap, bounds: Rect, bg: Int): Span? {
         val x0 = bounds.left.coerceIn(0, bmp.width - 1)
         val x1 = bounds.right.coerceIn(x0 + 1, bmp.width)
         val inset = (bounds.height() * MIDDLE_INSET).toInt()
@@ -190,21 +215,42 @@ object ColorSampler {
         val y1 = (bounds.bottom - inset).coerceIn(y0 + 1, bmp.height)
         val w = x1 - x0
         val h = y1 - y0
-        if (w < 8 || h < 2) return 0
+        if (w < 8 || h < 2) return null
 
         val px = IntArray(w * h)
         bmp.getPixels(px, 0, w, x0, y0, w, h)
-        // An outlined field would otherwise report its own right edge, so the outermost
-        // columns do not count; a glyph never reaches them anyway.
-        for (x in w - 1 - EDGE_SKIP downTo EDGE_SKIP) {
-            var lit = 0
-            for (y in 0 until h) {
-                if (dist(px[y * w + x] or OPAQUE, bg) >= MIN_INK_CONTRAST) lit++
-            }
-            // Two rows, so a single antialiased pixel is not mistaken for a stroke.
-            if (lit >= 2) return x0 + x + 1
+
+        // Pixels of column [x] sitting within tolerance of [colour]. The tolerance is the
+        // one that decides a pixel is bare surface; asked of the text's colour instead, it
+        // decides the opposite — that a pixel is on the text.
+        fun near(x: Int, colour: Int): Int {
+            var n = 0
+            for (y in 0 until h) if (dist(px[y * w + x] or OPAQUE, colour) < MIN_INK_CONTRAST) n++
+            return n
         }
-        return 0
+        // Two rows, so a single antialiased pixel is not mistaken for a stroke.
+        fun occupied(x: Int) = h - near(x, bg) >= 2
+
+        // An outlined field would otherwise report its own edges, so the outermost columns
+        // do not count; a glyph never reaches them anyway.
+        val last = (w - 1 - EDGE_SKIP downTo EDGE_SKIP).firstOrNull { occupied(it) } ?: return null
+        val first = (EDGE_SKIP..last).firstOrNull { occupied(it) } ?: return null
+
+        // The text's own colour: of the pixels standing off the surface at the right end,
+        // the most common one is the stroke rather than an antialiased edge — the same
+        // reading [sampleAt] makes of an ink box.
+        val window = max(INK_SAMPLE_MIN, (last - first + 1) / INK_SAMPLE_SHARE)
+        val hist = HashMap<Int, Int>(64)
+        for (x in last downTo max(first, last - window + 1)) {
+            for (y in 0 until h) {
+                val c = px[y * w + x] or OPAQUE
+                if (dist(c, bg) >= MIN_INK_CONTRAST) hist[c] = (hist[c] ?: 0) + 1
+            }
+        }
+        val ink = hist.maxByOrNull { it.value }?.key ?: return null
+
+        val start = (first..last).firstOrNull { near(it, ink) >= 2 } ?: first
+        return Span(x0 + start, x0 + last + 1)
     }
 
     /** Most common colour in [box], or null if nothing is common enough to be a surface. */

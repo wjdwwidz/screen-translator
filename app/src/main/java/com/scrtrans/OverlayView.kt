@@ -19,9 +19,10 @@ import kotlin.math.min
  * would have nothing to compute.
  *
  * Two paths. When the character-location API told us where the Japanese actually is,
- * we place the Korean on top of exactly that and cover exactly that. When it did not
- * — EditText hints are the only case seen so far — we fall back to estimating from the
- * node box, which needs the node-wide wash to hide a source we cannot locate.
+ * we place the Korean on top of exactly that and cover exactly that. When it did not —
+ * EditText hints, which are not the text and so have no characters to locate — we fall
+ * back to the node box: its height gives the line to centre on, and the screenshot gives
+ * the columns the source's text occupied, which is what the wash covers.
  *
  * Colours come from [ColorSampler] when it could read them and default to dark-on-white
  * when it could not, so every item has to carry its own pair rather than share constants.
@@ -45,9 +46,6 @@ class OverlayView(context: Context) : View(context) {
 
         private const val MIN_TEXT_PX = 14f
         private const val GLYPH_PAD = 4f
-
-        /** Fraction of a character the wash reaches past the source's left edge. */
-        private const val WASH_SLACK = 0.5f
 
         /**
          * The sizes a translation may be drawn at, as fractions of the source's own.
@@ -96,7 +94,7 @@ class OverlayView(context: Context) : View(context) {
         val layoutTop: Float,
         /** Fallback items wash the whole node; ink-located items leave it alone. */
         val washNode: Boolean,
-        /** What [washNode] paints. The node box, less any icon we could locate. */
+        /** What [washNode] paints: the source's own columns, so a leading icon survives. */
         val wash: Rect,
         val washColor: Int,
         val bandColor: Int,
@@ -260,8 +258,13 @@ class OverlayView(context: Context) : View(context) {
         scale: List<Float>,
         body: Float,
     ): Prepared {
-        val w = item.bounds.width()
         val h = item.bounds.height()
+        // Where the source's text starts, and so where ours does. The screenshot says,
+        // when it could read the box; otherwise the box's own edge has to do. It is known
+        // before fitting because the room a translation has is the room to the right of
+        // it — a leading icon takes its share out of the box first.
+        val left = if (item.hasSpan) item.inkLeft.toFloat() else item.bounds.left.toFloat()
+        val w = (item.bounds.right - left).toInt().coerceAtLeast(1)
         val base = estimatedSize(item, scale, body)
         val fit = fitToWidth(item.display, w, base, sourceLines = 1, centred = false)
         val size = fit.size
@@ -274,7 +277,6 @@ class OverlayView(context: Context) : View(context) {
 
         textPaint.textSize = size
         val fm = textPaint.fontMetrics
-        val left = sourceLeft(item, size) ?: item.bounds.left.toFloat()
 
         if (fit.layout == null) {
             // Centre on top..bottom, not ascent..descent: TextView defaults to
@@ -283,7 +285,7 @@ class OverlayView(context: Context) : View(context) {
             val lineH = fm.bottom - fm.top
             val baseline = item.bounds.top + (h - lineH) / 2f - fm.top
             measurePaint.textSize = size
-            val wash = washFor(item, left, measurePaint.measureText(item.display), size)
+            val wash = washFor(item, left, measurePaint.measureText(item.display))
             val band = Rect(wash.left, (baseline + fm.top).toInt(), wash.right, (baseline + fm.bottom).toInt())
             return Prepared(
                 item.bounds, band, left, size,
@@ -297,7 +299,7 @@ class OverlayView(context: Context) : View(context) {
         val top = item.bounds.top + (h - layout.height) / 2f
         var widest = 0f
         for (i in 0 until layout.lineCount) widest = max(widest, layout.getLineWidth(i))
-        val wash = washFor(item, left, widest, size)
+        val wash = washFor(item, left, widest)
         val band = Rect(wash.left, top.toInt(), wash.right, (top + layout.height).toInt())
         return Prepared(
             item.bounds, band, left, size,
@@ -308,36 +310,21 @@ class OverlayView(context: Context) : View(context) {
     }
 
     /**
-     * Where the source's text starts inside its node box, or null if that is unknown and
-     * the box's own left edge will have to do.
-     *
-     * A search field draws its magnifier as a compound drawable of the EditText, so the
-     * icon sits inside the box the fallback path covers, and painting the whole box
-     * erases it. [RenderItem.inkRight] says where the box's content ends; the Japanese is
-     * left-aligned and its width is measurable, so subtracting one from the other gives
-     * where it began. Whatever is left of that is the icon, and goes untouched.
-     */
-    private fun sourceLeft(item: RenderItem, size: Float): Float? {
-        if (item.inkRight <= item.bounds.left) return null
-        measurePaint.textSize = size
-        val left = item.inkRight - measurePaint.measureText(item.source)
-        return left.coerceIn(item.bounds.left.toFloat(), item.bounds.right.toFloat())
-    }
-
-    /**
      * The box to paint over: from where the source's text began to wherever the source
      * and the translation end, whichever runs further.
      *
-     * Widened half a character to the left, because the source's width is measured in our
-     * font rather than the one it was drawn in and a few pixels either way would leave a
-     * sliver of Japanese showing. Half a character still clears the gap a leading icon
-     * leaves — measured at about two thirds of one.
+     * A search field draws its magnifier as a compound drawable of the EditText, so the
+     * icon sits inside the box this path covers, and painting the whole box erases it.
+     * [RenderItem.inkLeft] is where the screenshot found the source's text starting, so
+     * the icon is simply everything to the left of it and never gets painted. Only a
+     * glyph's worth of padding is added, for the antialiased edge of the first stroke;
+     * nothing here is estimated, so no slack is needed to cover an estimate's error.
      */
-    private fun washFor(item: RenderItem, left: Float, width: Float, size: Float): Rect {
+    private fun washFor(item: RenderItem, left: Float, width: Float): Rect {
         val b = item.bounds
-        if (item.inkRight <= b.left) return b
+        if (!item.hasSpan) return b
         return Rect(
-            (left - size * WASH_SLACK).toInt().coerceAtLeast(b.left),
+            (left - GLYPH_PAD).toInt().coerceAtLeast(b.left),
             b.top,
             max(item.inkRight, (left + width + GLYPH_PAD).toInt()).coerceAtMost(b.right),
             b.bottom,
