@@ -51,7 +51,7 @@ class OverlayView(context: Context) : View(context) {
          * The sizes a translation may be drawn at, as fractions of the source's own.
          * Few and coarse on purpose: see [fitToWidth].
          */
-        private val SHRINK_STEPS = floatArrayOf(1f, 0.85f, 0.7f)
+        private val SHRINK_STEPS = floatArrayOf(1f, 0.85f, 0.7f, 0.55f, 0.45f)
 
         /** Lines a translation may use beyond what the source itself used. */
         private const val EXTRA_LINES = 1
@@ -160,7 +160,9 @@ class OverlayView(context: Context) : View(context) {
         }.coerceAtLeast(1)
 
         val source = sourceSize(item)
-        val fit = fitToWidth(item.display, available, source, item.inkLines.size, centred)
+        val fit = fitToWidth(
+            item.display, available, item.bounds.height(), source, item.inkLines.size, centred,
+        )
         val size = fit.size
         if (DEBUG_SIZE) {
             logd(
@@ -266,7 +268,7 @@ class OverlayView(context: Context) : View(context) {
         val left = if (item.hasSpan) item.inkLeft.toFloat() else item.bounds.left.toFloat()
         val w = (item.bounds.right - left).toInt().coerceAtLeast(1)
         val base = estimatedSize(item, scale, body)
-        val fit = fitToWidth(item.display, w, base, sourceLines = 1, centred = false)
+        val fit = fitToWidth(item.display, w, h, base, sourceLines = 1, centred = false)
         val size = fit.size
         if (DEBUG_SIZE) {
             logd(
@@ -374,6 +376,7 @@ class OverlayView(context: Context) : View(context) {
     private fun fitToWidth(
         text: String,
         available: Int,
+        availableHeight: Int,
         source: Float,
         sourceLines: Int,
         centred: Boolean,
@@ -382,7 +385,11 @@ class OverlayView(context: Context) : View(context) {
         // a box the text has to be made to fit: the Japanese in it is half cut off too.
         // Wrapping such a box stacks the translation one character to a line, so let it
         // run off the edge instead and be clipped exactly where the source was.
-        if (available < source * MIN_FIT_EMS) return Fit(source, null)
+        //
+        // Unless the source wrapped in it. 再来 sits in a 72x325 badge as 再\n来, turned on
+        // its side by the app on purpose — narrow is the design, not a clipped edge. Taking
+        // the escape there drew 재방문 on one line straight across the coupon title beside it.
+        if (sourceLines <= 1 && available < source * MIN_FIT_EMS) return Fit(source, null)
 
         val maxLines = sourceLines + EXTRA_LINES
         for ((i, scale) in SHRINK_STEPS.withIndex()) {
@@ -390,7 +397,11 @@ class OverlayView(context: Context) : View(context) {
             measurePaint.textSize = size
             if (measurePaint.measureText(text) <= available) return Fit(size, null)
             val layout = buildLayout(text, available, size, centred)
-            if (layout.lineCount <= maxLines || i == SHRINK_STEPS.lastIndex) {
+            // Line count alone let 提示条件： become 프레젠테이션 조건 : on two lines inside a
+            // 49px box, and the next label sits 61px below — so the wrapped block has to fit
+            // the height the source had, not merely a line count budget.
+            val fits = layout.lineCount <= maxLines && layout.height <= availableHeight
+            if (fits || i == SHRINK_STEPS.lastIndex) {
                 return Fit(size, layout)
             }
         }
