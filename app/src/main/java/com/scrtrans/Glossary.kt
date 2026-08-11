@@ -78,6 +78,23 @@ object Glossary {
         // A payment method's name. スマート survived as "smart" and was then translated
         // by meaning into 똑똑한, and OK became 확인.
         "スマート支払いOK" to "스마트 결제 가능",      // was: 똑똑한 지불 확인
+        // A brand name, so コイン must not be translated by meaning. 支払い became 지불
+        // and OK became 확인, on top of 동전.
+        "COIN+支払いOK" to "COIN+ 결제 가능",          // was: 동전 + 지불 확인
+
+        // --- coupon conditions ---
+        // 提示 went out as "presentation" and came back 프레젠테이션. Reading as an
+        // instruction rather than a heading — the value beside it is 예약 시 — says what
+        // to actually do with the coupon.
+        "提示条件：" to "쿠폰 제시:",                  // was: 프레젠테이션 조건 :
+        "予約時" to "예약 시",                        // was: 시각
+        "利用条件：" to "이용 조건:",                  // was: 이용 약관 :
+        // 不可 keeps going missing. The second one is the worst of all the mistakes seen
+        // so far: 지명 불가 came back as 지명되었습니다, so a prohibition read as a
+        // statement that it had been done.
+        "他クーポンと併用不可" to "다른 쿠폰과 함께 사용 불가",
+        "他クーポンと併用不可　/ スタッフ指名不可" to
+            "다른 쿠폰과 함께 사용 불가 / 스태프 지명 불가",
 
         // --- UI labels read off real screens ---
         "ヘア" to "헤어",
