@@ -1,4 +1,8 @@
 local.properties
+# Signing material. Losing release.jks means never being able to update a
+# release signed with it, so back it up somewhere outside this repo.
+*.jks
+*.keystore
 .gradle/
 build/
 *.iml
