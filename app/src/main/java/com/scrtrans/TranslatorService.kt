@@ -70,6 +70,7 @@ class TranslatorService : AccessibilityService() {
     // would hide the moment we leave the target app, and the last screen's boxes
     // would sit there over whatever came next.
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        eventSeq++
         handler.removeCallbacks(collectTask)
         handler.removeCallbacks(settleTask)
         handler.postDelayed(collectTask, DEBOUNCE_MS)
@@ -103,7 +104,7 @@ class TranslatorService : AccessibilityService() {
         logi("collected ${lastItems.size} items, $located located, probe=$probe (${"%.0f".format(ms)}ms)")
         render()
 
-        if (probe && ColorSampler.ENABLED && located > 0 && needsColours()) sampleColors()
+        if (probe && ColorSampler.ENABLED && located > 0 && screenChangedSinceShot()) sampleColors()
 
         // Scheduled whatever the walk found, where this used to ask for an unlocated box
         // first. Probing is no longer the only thing the pass is for: it is also the only
@@ -113,9 +114,9 @@ class TranslatorService : AccessibilityService() {
         // walked once collected 24 items, 24 located, and no `coloured` line ever followed.
         //
         // The pass this adds is the cheap one, since by definition nothing needs probing:
-        // measured 9-37ms, against 93-176ms when it has strings to look up. It only
-        // reaches the screenshot when [needsColours] says a colour is actually missing,
-        // so a re-entered screen costs the walk and nothing else.
+        // measured 9-37ms, against 93-176ms when it has strings to look up. It reaches the
+        // screenshot only when [screenChangedSinceShot] says so, so a screen sitting still
+        // costs the walk and nothing else however many times this fires on it.
         if (!probe) {
             handler.removeCallbacks(settleTask)
             handler.postDelayed(settleTask, SETTLE_MS)
@@ -123,18 +124,40 @@ class TranslatorService : AccessibilityService() {
     }
 
     /**
-     * Whether a screenshot would tell us anything we do not already know.
+     * Whether a screenshot would tell us anything we do not already know: one screen, one
+     * reading, and no second look until the screen is a different one.
      *
      * The shot costs a blank frame — the overlay has to come down for it, measured 370-386ms
-     * from the probe pass to `coloured` — so it has to be earned. Once [colourCache] can
-     * answer for every item on screen there is nothing to earn it.
+     * from the probe pass to `coloured` — so it has to be earned, and a screen that has
+     * already been photographed as it is now cannot earn another. That covers the idle
+     * repaint and the once-a-minute clock tick, which is where the waste was.
      *
-     * The cost is that an item which changes colour without changing its text or its box
-     * — a tab going active — keeps the colour it was first read in. That is the same
-     * trade [colourCache] already makes, and it is bounded by the key: any change to
-     * either half re-reads. It becomes fixable for free once the shot no longer blinks.
+     * It deliberately does *not* ask whether a colour is missing, which is what it asked
+     * first and got wrong. A reading can be wrong as easily as absent — a shot that lands
+     * while the screen is still settling reads the pixels of a layout that has moved on,
+     * and [colourCache] would then hold that wrong colour for the session with nothing
+     * ever scheduled to correct it. Measured: the section headers 「主なキーワードで探す」
+     * and 「ヘアスタイル動画で見る」 came back with a white surface against the grey band
+     * they actually sit on, `coloured 24/24` with nothing missing, and stayed white
+     * through every later pass. Asking "is this the screen I last photographed" instead
+     * re-reads on arrival, so a bad reading survives exactly one screen.
+     *
+     * The same question also retires the "shoot forever" case: a screen holding an item
+     * whose colour is genuinely unreadable — text over a photo — would otherwise fail the
+     * missing-colour test on every settle and blink every time for a colour that is never
+     * coming.
      */
-    private fun needsColours() = lastItems.any { it.colors == null }
+    private fun screenChangedSinceShot() =
+        lastItems.mapTo(HashSet(lastItems.size)) { colourKey(it) } != shotKeys
+
+    /** The keys the last filed screenshot covered. See [screenChangedSinceShot]. */
+    private var shotKeys: Set<String> = emptySet()
+
+    /**
+     * Bumped by every accessibility event, so a screenshot can tell whether the screen
+     * held still for it. See [sampleColors].
+     */
+    private var eventSeq = 0
 
     /** What one screenshot learned about one item. See [colourCache] for the offsets. */
     private class Sample(val colors: SourceColors, val spanLeft: Int, val spanRight: Int)
@@ -201,25 +224,29 @@ class TranslatorService : AccessibilityService() {
      *
      * The screenshot composites our own overlay, so the overlay comes down for the
      * frame and the translations visibly blink. Nothing else can see past ourselves,
-     * and it only happens once a screen has settled and [needsColours] has found
-     * something it cannot answer from [colourCache].
+     * and it only happens once a screen has settled and [screenChangedSinceShot] says
+     * this is not the screen we last photographed.
      */
     private fun sampleColors() {
         val snapshot = lastItems
         overlay.clear()
         handler.postDelayed({
+            // Everything below is about one question: did the screen hold still from here
+            // until the pixels came back? A reading taken across a change pairs one
+            // layout's boxes with another's pixels, and this cache is read for the rest
+            // of the session, where the carry it replaces was thrown away next pass.
+            val shutter = eventSeq
             ColorSampler.sample(this, snapshot) { coloured ->
                 handler.post {
-                    // A new screen may have arrived while the shot was in flight; its
-                    // items win, and rendering either way puts the overlay back up.
-                    //
-                    // Nothing is filed in that case either. The boxes came from the old
-                    // screen and the pixels from whatever was up when the shutter opened,
-                    // so the pairing is unsound — and this cache is read for the rest of
-                    // the session, where the carry it replaces was thrown away next pass.
-                    if (lastItems === snapshot) {
+                    // Identity alone is not enough. An event arriving mid-shot only
+                    // reaches [lastItems] a DEBOUNCE_MS later, which is longer than the
+                    // shot, so the list still looks untouched at exactly the moment it is
+                    // known to be stale. The counter sees what the list cannot yet.
+                    val held = lastItems === snapshot && eventSeq == shutter
+                    if (held) {
                         lastItems = coloured
                         rememberColours(coloured)
+                        shotKeys = coloured.mapTo(HashSet(coloured.size)) { colourKey(it) }
                     }
                     render()
                 }
