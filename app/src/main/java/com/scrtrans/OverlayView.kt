@@ -215,8 +215,18 @@ class OverlayView(context: Context) : View(context) {
         val band = Rect(inkUnion)
 
         if (fit.layout == null) {
-            // Line top == the source's line top, so our text lands on its line.
-            val baseline = first.top - fm.top
+            // Line top == the source's line top, so our text lands on its line — but only
+            // while the two occupy the same number of lines. A translation that fits on
+            // one line where the source took two would sit on the source's upper line and
+            // read as riding high: the クーポン・メニュー tab did, against 특징 and 스태프
+            // beside it. Fewer lines than the source means centring in what it used.
+            val lineH = fm.bottom - fm.top
+            val top = if (item.inkLines.size > 1) {
+                inkUnion.top + (inkUnion.height() - lineH) / 2f
+            } else {
+                first.top.toFloat()
+            }
+            val baseline = top - fm.top
             val left = if (centred) cx - width / 2f else first.left.toFloat()
             band.left = min(inkUnion.left, (left - GLYPH_PAD).toInt())
             band.right = max(inkUnion.right, (left + width + GLYPH_PAD).toInt())
@@ -232,7 +242,13 @@ class OverlayView(context: Context) : View(context) {
 
         val layout = fit.layout
         val layoutLeft = if (centred) cx - available / 2f else first.left.toFloat()
-        val top = first.top.toFloat()
+        // Same rule as the single-line path: pin to the source's first line when the two
+        // use the same number of lines, centre in what the source used when we use fewer.
+        val top = if (layout.lineCount < item.inkLines.size) {
+            inkUnion.top + (inkUnion.height() - layout.height) / 2f
+        } else {
+            first.top.toFloat()
+        }
         var widest = 0f
         for (i in 0 until layout.lineCount) widest = max(widest, layout.getLineWidth(i))
         // Centred lines sit in the middle of the layout box, not at its edge.
