@@ -78,6 +78,14 @@ class OverlayView(context: Context) : View(context) {
 
         /** Logs how each item's size was arrived at, for tuning the fitting rules. */
         const val DEBUG_SIZE = false
+
+        /**
+         * Logs everything the ink path decides a position from: the boxes it read, the
+         * centring test and both of its halves, the width it thought it had, and where
+         * the text ended up. For working out why a label sits off-centre or wraps when
+         * there was room beside it.
+         */
+        const val DEBUG_PLACE = false
         private const val RULE_X = 500f
         private const val RULE_Y = 1000f
     }
@@ -146,10 +154,20 @@ class OverlayView(context: Context) : View(context) {
         val inkUnion = Rect(first)
         for (r in item.inkLines) inkUnion.union(r)
 
-        val centred = isCentred(inkUnion, item.container) &&
-            // A wrap_content box hugs its text and can only say "centred"; one with room
-            // to spare has to agree, or this is an icon pushing left-aligned text right.
-            (item.bounds.width() < inkUnion.width() + 8 || isCentred(inkUnion, item.bounds))
+        // The node's own box answers this whenever it has room to spare: text sitting with
+        // equal margins inside it is centred, whatever the box's place in the row.
+        // Requiring the container to agree first got grid cells wrong — a tab centred in
+        // its own 312px cell is nowhere near the centre of the 1080px row that holds all
+        // three, so 쿠폰·메뉴 and the booking button anchored left instead.
+        //
+        // Only a wrap_content box needs the container, because a box that hugs its text
+        // reports equal margins no matter how the row placed it.
+        val boxHugs = item.bounds.width() < inkUnion.width() + 8
+        val centred = if (boxHugs) {
+            isCentred(inkUnion, item.container)
+        } else {
+            isCentred(inkUnion, item.bounds)
+        }
 
         val cx = inkUnion.exactCenterX()
         val available = if (centred) {
@@ -173,6 +191,23 @@ class OverlayView(context: Context) : View(context) {
         }
         measurePaint.textSize = size
         val width = measurePaint.measureText(item.display)
+
+        if (DEBUG_PLACE) {
+            val b = item.bounds
+            val c = item.container
+            fun r(x: Rect) = "[${x.left},${x.top},${x.right},${x.bottom}]"
+            logd(
+                "place '${item.display.take(14)}' src=${item.inkLines.size}line " +
+                    "bounds=${r(b)} container=${r(c)} ink=${r(inkUnion)} " +
+                    "first=${r(first)} cx=$cx " +
+                    "centredInContainer=${isCentred(inkUnion, item.container)} " +
+                    "boxHugs=$boxHugs " +
+                    "centredInBounds=${isCentred(inkUnion, b)} centred=$centred " +
+                    "avail=$available size=$size w=$width " +
+                    "lines=${fit.layout?.lineCount ?: 1} " +
+                    "left=${if (centred) cx - width / 2f else first.left.toFloat()}"
+            )
+        }
 
         textPaint.textSize = size
         val fm = textPaint.fontMetrics
