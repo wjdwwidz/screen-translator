@@ -125,12 +125,15 @@ class MainActivity : Activity() {
         )
         for (pkg in known) appList.addView(appRow(pkg))
 
-        val found = TargetApps.detected().size
+        // Counts the rows on screen, not just the scout's finds. Counting only the
+        // latter left the number disagreeing with the list in front of it, and it went
+        // to zero for anyone who does not have the built-in app installed.
+        val listed = TargetApps.known().size
         appList.addView(TextView(this).apply {
-            text = if (found == 0) {
-                "다른 일본어 앱을 사용하면 여기에 자동으로 추가됩니다."
+            text = if (listed == 0) {
+                "일본어 앱을 사용하면 여기에 자동으로 추가됩니다."
             } else {
-                "일본어 앱 ${found}개를 찾았습니다. 다른 앱을 사용하면 여기에 계속 추가됩니다."
+                "번역할 수 있는 앱 ${listed}개. 다른 일본어 앱을 사용하면 여기에 계속 추가됩니다."
             }
             textSize = 12f
             setTextColor(Color.rgb(160, 160, 168))
