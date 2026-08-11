@@ -51,7 +51,7 @@ class OverlayView(context: Context) : View(context) {
          * The sizes a translation may be drawn at, as fractions of the source's own.
          * Few and coarse on purpose: see [fitToWidth].
          */
-        private val SHRINK_STEPS = floatArrayOf(1f, 0.85f, 0.7f)
+        private val SHRINK_STEPS = floatArrayOf(1f, 0.85f, 0.7f, 0.55f, 0.45f)
 
         /** Lines a translation may use beyond what the source itself used. */
         private const val EXTRA_LINES = 1
@@ -78,6 +78,14 @@ class OverlayView(context: Context) : View(context) {
 
         /** Logs how each item's size was arrived at, for tuning the fitting rules. */
         const val DEBUG_SIZE = false
+
+        /**
+         * Logs everything the ink path decides a position from: the boxes it read, the
+         * centring test and both of its halves, the width it thought it had, and where
+         * the text ended up. For working out why a label sits off-centre or wraps when
+         * there was room beside it.
+         */
+        const val DEBUG_PLACE = false
         private const val RULE_X = 500f
         private const val RULE_Y = 1000f
     }
@@ -146,10 +154,20 @@ class OverlayView(context: Context) : View(context) {
         val inkUnion = Rect(first)
         for (r in item.inkLines) inkUnion.union(r)
 
-        val centred = isCentred(inkUnion, item.container) &&
-            // A wrap_content box hugs its text and can only say "centred"; one with room
-            // to spare has to agree, or this is an icon pushing left-aligned text right.
-            (item.bounds.width() < inkUnion.width() + 8 || isCentred(inkUnion, item.bounds))
+        // The node's own box answers this whenever it has room to spare: text sitting with
+        // equal margins inside it is centred, whatever the box's place in the row.
+        // Requiring the container to agree first got grid cells wrong — a tab centred in
+        // its own 312px cell is nowhere near the centre of the 1080px row that holds all
+        // three, so 쿠폰·메뉴 and the booking button anchored left instead.
+        //
+        // Only a wrap_content box needs the container, because a box that hugs its text
+        // reports equal margins no matter how the row placed it.
+        val boxHugs = item.bounds.width() < inkUnion.width() + 8
+        val centred = if (boxHugs) {
+            isCentred(inkUnion, item.container)
+        } else {
+            isCentred(inkUnion, item.bounds)
+        }
 
         val cx = inkUnion.exactCenterX()
         val available = if (centred) {
@@ -160,7 +178,9 @@ class OverlayView(context: Context) : View(context) {
         }.coerceAtLeast(1)
 
         val source = sourceSize(item)
-        val fit = fitToWidth(item.display, available, source, item.inkLines.size, centred)
+        val fit = fitToWidth(
+            item.display, available, item.bounds.height(), source, item.inkLines.size, centred,
+        )
         val size = fit.size
         if (DEBUG_SIZE) {
             logd(
@@ -171,6 +191,23 @@ class OverlayView(context: Context) : View(context) {
         }
         measurePaint.textSize = size
         val width = measurePaint.measureText(item.display)
+
+        if (DEBUG_PLACE) {
+            val b = item.bounds
+            val c = item.container
+            fun r(x: Rect) = "[${x.left},${x.top},${x.right},${x.bottom}]"
+            logd(
+                "place '${item.display.take(14)}' src=${item.inkLines.size}line " +
+                    "bounds=${r(b)} container=${r(c)} ink=${r(inkUnion)} " +
+                    "first=${r(first)} cx=$cx " +
+                    "centredInContainer=${isCentred(inkUnion, item.container)} " +
+                    "boxHugs=$boxHugs " +
+                    "centredInBounds=${isCentred(inkUnion, b)} centred=$centred " +
+                    "avail=$available size=$size w=$width " +
+                    "lines=${fit.layout?.lineCount ?: 1} " +
+                    "left=${if (centred) cx - width / 2f else first.left.toFloat()}"
+            )
+        }
 
         textPaint.textSize = size
         val fm = textPaint.fontMetrics
@@ -266,7 +303,7 @@ class OverlayView(context: Context) : View(context) {
         val left = if (item.hasSpan) item.inkLeft.toFloat() else item.bounds.left.toFloat()
         val w = (item.bounds.right - left).toInt().coerceAtLeast(1)
         val base = estimatedSize(item, scale, body)
-        val fit = fitToWidth(item.display, w, base, sourceLines = 1, centred = false)
+        val fit = fitToWidth(item.display, w, h, base, sourceLines = 1, centred = false)
         val size = fit.size
         if (DEBUG_SIZE) {
             logd(
@@ -374,6 +411,7 @@ class OverlayView(context: Context) : View(context) {
     private fun fitToWidth(
         text: String,
         available: Int,
+        availableHeight: Int,
         source: Float,
         sourceLines: Int,
         centred: Boolean,
@@ -382,7 +420,11 @@ class OverlayView(context: Context) : View(context) {
         // a box the text has to be made to fit: the Japanese in it is half cut off too.
         // Wrapping such a box stacks the translation one character to a line, so let it
         // run off the edge instead and be clipped exactly where the source was.
-        if (available < source * MIN_FIT_EMS) return Fit(source, null)
+        //
+        // Unless the source wrapped in it. 再来 sits in a 72x325 badge as 再\n来, turned on
+        // its side by the app on purpose — narrow is the design, not a clipped edge. Taking
+        // the escape there drew 재방문 on one line straight across the coupon title beside it.
+        if (sourceLines <= 1 && available < source * MIN_FIT_EMS) return Fit(source, null)
 
         val maxLines = sourceLines + EXTRA_LINES
         for ((i, scale) in SHRINK_STEPS.withIndex()) {
@@ -390,7 +432,11 @@ class OverlayView(context: Context) : View(context) {
             measurePaint.textSize = size
             if (measurePaint.measureText(text) <= available) return Fit(size, null)
             val layout = buildLayout(text, available, size, centred)
-            if (layout.lineCount <= maxLines || i == SHRINK_STEPS.lastIndex) {
+            // Line count alone let 提示条件： become 프레젠테이션 조건 : on two lines inside a
+            // 49px box, and the next label sits 61px below — so the wrapped block has to fit
+            // the height the source had, not merely a line count budget.
+            val fits = layout.lineCount <= maxLines && layout.height <= availableHeight
+            if (fits || i == SHRINK_STEPS.lastIndex) {
                 return Fit(size, layout)
             }
         }
