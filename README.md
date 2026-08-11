@@ -20,6 +20,13 @@
 |---|---|
 | <img src="docs/images/styles.png" alt="스타일 검색 화면 오버레이" width="240"> | <img src="docs/images/setup.png" alt="권한 상태와 앱별 번역 목록이 있는 앱 실행 화면" width="240"> |
 
+숫자와 글자가 촘촘히 섞인 화면에서도 각 값이 제자리를 지킵니다. 별점 막대의 수치, 항목별
+점수, 리뷰 본문이 원문과 같은 크기·같은 색으로 그려집니다.
+
+| 리뷰 화면 |
+|---|
+| <img src="docs/images/review.png" alt="별점 분포와 항목별 점수, 리뷰 본문이 번역된 화면" width="240"> |
+
 > 스크린샷의 대상 앱은 예시로 사용한 서드파티 [hot-pepper-beauty](https://play.google.com/store/apps/details?id=jp.hotpepper.android.beauty.hair&hl=ko)✨ 어플입니다.
 
 ## 기술 스택
