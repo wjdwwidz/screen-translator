@@ -92,8 +92,14 @@ object DetectionSheet {
     /**
      * Takes the sheet down once the user has moved on. Called on every collect pass, so
      * an offer about one app never ends up sitting over another.
+     *
+     * A null package is not a different app, it is no answer: rootInActiveWindow comes
+     * back null through window transitions, and treating that as "moved on" tore the
+     * sheet down a frame or two after it went up, while the user was still in the app
+     * it was asking about.
      */
     fun dismissIfNotFor(pkg: String?) {
+        if (pkg == null) return
         if (view != null && pkg != shownFor) dismiss()
     }
 
