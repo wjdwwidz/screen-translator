@@ -78,6 +78,9 @@ object Glossary {
         // A payment method's name. スマート survived as "smart" and was then translated
         // by meaning into 똑똑한, and OK became 확인.
         "スマート支払いOK" to "스마트 결제 가능",      // was: 똑똑한 지불 확인
+        // A brand name, so コイン must not be translated by meaning. 支払い became 지불
+        // and OK became 확인, on top of 동전.
+        "COIN+支払いOK" to "COIN+ 결제 가능",          // was: 동전 + 지불 확인
 
         // --- coupon conditions ---
         // 提示 went out as "presentation" and came back 프레젠테이션. Reading as an
