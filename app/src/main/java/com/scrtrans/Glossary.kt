@@ -58,6 +58,27 @@ object Glossary {
         "サロンからの\nメッセージ" to "살롱에서 온 메시지",
         "利用開始" to "이용 시작",
 
+        // --- salon detail tabs, read off the screen ---
+        // Katakana with nothing else, so they are skipped as loanwords unless the
+        // glossary answers for them — see isKatakanaOnly and TextCollector's check.
+        // スタッフ and 口コミ beside them were already translated for that reason.
+        "フォト" to "사진",
+        "ブログ" to "블로그",
+        // This tab wraps to two lines and the break is in the string itself, so the
+        // exact-match key has to carry it too.
+        "クーポン・\nメニュー" to "쿠폰·메뉴",
+
+        // --- salon detail, wrong via English ---
+        // 空席 went out as "vacancy" and came back 차량, 確認 as "check" and came back
+        // 수표: two homograph traps in one label.
+        "空席確認・予約" to "빈자리 확인·예약",       // was: 차량 수표 및 예약
+        // Heads the salon's "what we are known for" section. The dictionary sense
+        // 고집 became "devotion" became 헌신.
+        "こだわり" to "특징",                         // was: 헌신
+        // A payment method's name. スマート survived as "smart" and was then translated
+        // by meaning into 똑똑한, and OK became 확인.
+        "スマート支払いOK" to "스마트 결제 가능",      // was: 똑똑한 지불 확인
+
         // --- UI labels read off real screens ---
         "ヘア" to "헤어",
         "ネイル" to "네일",
