@@ -229,14 +229,22 @@ class TranslatorService : AccessibilityService() {
      */
     private fun sampleColors() {
         val snapshot = lastItems
-        overlay.clear()
+        val root = rootInActiveWindow ?: return
+        val windowId = root.windowId
+        val windowBounds = android.graphics.Rect().also { root.getBoundsInScreen(it) }
+
+        // Taking the overlay down for the shot is what showed the Japanese underneath for
+        // a frame. A window-only shot cannot see our overlay, so there is nothing to hide
+        // and nothing to wait for; only the older path still pays that price.
+        val needsClearing = !ColorSampler.canShootWindow(windowId)
+        if (needsClearing) overlay.clear()
         handler.postDelayed({
             // Everything below is about one question: did the screen hold still from here
             // until the pixels came back? A reading taken across a change pairs one
             // layout's boxes with another's pixels, and this cache is read for the rest
             // of the session, where the carry it replaces was thrown away next pass.
             val shutter = eventSeq
-            ColorSampler.sample(this, snapshot) { coloured ->
+            ColorSampler.sample(this, snapshot, windowId, windowBounds) { coloured ->
                 handler.post {
                     // Identity alone is not enough. An event arriving mid-shot only
                     // reaches [lastItems] a DEBOUNCE_MS later, which is longer than the
@@ -251,7 +259,7 @@ class TranslatorService : AccessibilityService() {
                     render()
                 }
             }
-        }, ColorSampler.CLEAR_MS)
+        }, if (needsClearing) ColorSampler.CLEAR_MS else 0L)
     }
 
     /** Re-maps the current items through the translator. Cheap: it is a cache lookup. */

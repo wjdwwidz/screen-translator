@@ -11,3 +11,5 @@ build/
 *.png
 !docs/images/*.png
 spec.md
+__pycache__/
+*.pyc

@@ -31,11 +31,15 @@ object TranslationLog {
         synchronized(seen) {
             if (!seen.add(source)) return // one line per distinct source string
         }
+        // Only the engine's output is suspect; glossary entries were written by hand.
+        val lostNegation = !fromGlossary && NegationCheck.lostNegation(source, result)
+        if (lostNegation) logw("negation lost: \"$source\" -> \"$result\"")
         io.execute {
             try {
                 f.appendText(
                     """{"source":${quote(source)},"result":${quote(result)},""" +
-                        """"fromGlossary":$fromGlossary,"guessed":$guessed}""" + "\n"
+                        """"fromGlossary":$fromGlossary,"guessed":$guessed,""" +
+                        """"lostNegation":$lostNegation}""" + "\n"
                 )
             } catch (e: Exception) {
                 logw("log write failed", e)
