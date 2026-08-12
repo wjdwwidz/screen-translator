@@ -3,6 +3,7 @@ package com.scrtrans
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.os.Build
 import android.view.Display
 import kotlin.math.max
 
@@ -69,14 +70,28 @@ object ColorSampler {
      * the sample was trustworthy. Called back on a binder thread, not the main one.
      * Always calls back, including on failure, so the caller can restore the overlay.
      */
+    /** True when the window-only shot is available, which is what makes [CLEAR_MS] unnecessary. */
+    fun canShootWindow(windowId: Int) =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && windowId != -1
+
     fun sample(
         service: AccessibilityService,
         items: List<TextItem>,
+        windowId: Int,
+        windowBounds: Rect,
         onResult: (List<TextItem>) -> Unit,
     ) {
-        service.takeScreenshot(
-            Display.DEFAULT_DISPLAY,
-            { it.run() },
+        // Shooting the target's window alone leaves our overlay out of the frame by
+        // construction, so it no longer has to be taken down for the shot — which is what
+        // the 한국어 -> 일본어 -> 한국어 flicker was.
+        val windowOnly = canShootWindow(windowId)
+        // A window shot starts at the window's top-left; ink rectangles are screen
+        // absolute. Measured 0 here because this app's window fills the display, but a
+        // sheet or a split screen would not, and the samples would all be off by this.
+        val dx = if (windowOnly) windowBounds.left else 0
+        val dy = if (windowOnly) windowBounds.top else 0
+
+        val callback =
             object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                     val buffer = result.hardwareBuffer
@@ -93,16 +108,18 @@ object ColorSampler {
                         if (item.hasInk) {
                             val box = Rect(item.inkLines.first())
                             for (r in item.inkLines) box.union(r)
+                            box.offset(-dx, -dy)
                             val colors = sampleAt(bmp, box, item.text)
                             if (colors != null) got++
                             item.copy(colors = colors)
                         } else {
-                            val bg = surfaceOf(bmp, item.bounds)
+                            val nodeBox = Rect(item.bounds).also { it.offset(-dx, -dy) }
+                            val bg = surfaceOf(bmp, nodeBox)
                             if (bg == null && LOG_MISSES) {
                                 logi("no colour \"${item.text}\": no flat surface in the node box")
                             }
                             if (bg != null) got++
-                            val span = bg?.let { contentSpan(bmp, item.bounds, it) }
+                            val span = bg?.let { contentSpan(bmp, nodeBox, it) }
                             item.copy(
                                 colors = bg?.let {
                                     SourceColors(it, if (isLight(it)) DARK_INK else LIGHT_INK)
@@ -118,11 +135,16 @@ object ColorSampler {
                 }
 
                 override fun onFailure(errorCode: Int) {
-                    logw("colour sample: takeScreenshot failed code=$errorCode")
+                    logw("colour sample: screenshot failed code=$errorCode windowOnly=$windowOnly")
                     onResult(items)
                 }
-            },
-        )
+            }
+
+        if (windowOnly) {
+            service.takeScreenshotOfWindow(windowId, { it.run() }, callback)
+        } else {
+            service.takeScreenshot(Display.DEFAULT_DISPLAY, { it.run() }, callback)
+        }
     }
 
     /**
