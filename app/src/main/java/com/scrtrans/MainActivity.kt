@@ -64,6 +64,8 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ))
 
+        root.addView(llmRow())
+
         // Rebuilt in onResume rather than filled once: the scout adds rows while the
         // user is off in another app, and coming back here is when they would look.
         appList = LinearLayout(this).apply {
@@ -173,6 +175,51 @@ class MainActivity : Activity() {
             // a tap and write back what it just read.
             isChecked = TargetApps.isEnabled(pkg)
             setOnCheckedChangeListener { _, on -> TargetApps.setEnabled(pkg, on) }
+        })
+
+        return row
+    }
+
+    /**
+     * The LLM switch, with the model's whereabouts under it. The file is the thing most
+     * likely to be missing, and a switch that silently does nothing is worse than one
+     * that says why.
+     */
+    private fun llmRow(): LinearLayout {
+        val model = LlmEngine.findModel(this)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 40, 0, 0)
+        }
+
+        row.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@MainActivity).apply {
+                    text = "긴 문장 LLM 번역"
+                    textSize = 15f
+                    setTextColor(
+                        if (model != null) Color.rgb(24, 24, 28) else Color.rgb(170, 170, 176)
+                    )
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = if (model == null) {
+                        "모델 없음 — files/model.litertlm 필요"
+                    } else {
+                        "짧은 라벨은 그대로, 본문만 몇 초 뒤 교체"
+                    }
+                    textSize = 11f
+                    setTextColor(Color.rgb(160, 160, 168))
+                })
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+
+        row.addView(Switch(this).apply {
+            isEnabled = model != null
+            isChecked = LlmSettings.enabled(this@MainActivity)
+            setOnCheckedChangeListener { _, on -> LlmSettings.setEnabled(this@MainActivity, on) }
         })
 
         return row
