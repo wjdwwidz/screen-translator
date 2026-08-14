@@ -26,10 +26,18 @@ object TranslationLog {
         logi("translation log: ${file?.absolutePath}")
     }
 
-    fun record(source: String, result: String, fromGlossary: Boolean, guessed: Boolean) {
+    fun record(
+        source: String,
+        result: String,
+        fromGlossary: Boolean,
+        guessed: Boolean,
+        engine: String = "mlkit",
+    ) {
         val f = file ?: return
         synchronized(seen) {
-            if (!seen.add(source)) return // one line per distinct source string
+            // One line per distinct source string, per engine: the LLM pass answers the
+            // same source a second time, and comparing the two is the point of the file.
+            if (!seen.add("$engine $source")) return
         }
         // Only the engine's output is suspect; glossary entries were written by hand.
         val lostNegation = !fromGlossary && NegationCheck.lostNegation(source, result)
@@ -38,6 +46,7 @@ object TranslationLog {
             try {
                 f.appendText(
                     """{"source":${quote(source)},"result":${quote(result)},""" +
+                        """"engine":${quote(engine)},""" +
                         """"fromGlossary":$fromGlossary,"guessed":$guessed,""" +
                         """"lostNegation":$lostNegation}""" + "\n"
                 )

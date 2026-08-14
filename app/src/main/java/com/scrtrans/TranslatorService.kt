@@ -51,7 +51,18 @@ class TranslatorService : AccessibilityService() {
         TargetApps.init(this)
 
         // Cache/dedup on the outside, glossary short-circuit next, engine at the bottom.
-        translator = CachingTranslator(GlossaryEngine(MlKitEngine())) {
+        // The LLM sits under the glossary and over ML Kit: glossary terms never reach it,
+        // ML Kit still answers everything immediately, and long body text gets a second,
+        // better answer a few seconds later.
+        val mlKit = MlKitEngine()
+        val model = LlmEngine.findModel(this)
+        val engine = if (model == null) mlKit else LlmEngine(
+            delegate = mlKit,
+            modelPath = model,
+            cacheDir = cacheDir.absolutePath,
+            enabled = { LlmSettings.enabled(this) },
+        )
+        translator = CachingTranslator(GlossaryEngine(engine)) {
             handler.post { render() }
         }
         translator.warmUp { ok ->
