@@ -80,7 +80,7 @@ class MainActivity : Activity() {
 
         root.addView(divider())
         root.addView(sectionLabel("번역 품질"))
-        root.addView(sectionNote("긴 문장은 온디바이스 LLM 이 한 번 더 번역합니다."))
+        root.addView(sectionNote("짧은 라벨은 그대로, 본문은 몇 초 뒤 품질을 높인 번역으로 교체합니다."))
         root.addView(llmRow())
 
         // Rebuilt in onResume rather than filled once: the scout adds rows while the
@@ -211,21 +211,21 @@ class MainActivity : Activity() {
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(TextView(this@MainActivity).apply {
-                    text = "긴 문장 LLM 번역"
+                    text = "LLM 재번역"
                     textSize = 15f
                     setTextColor(
                         if (model != null) Color.rgb(24, 24, 28) else Color.rgb(170, 170, 176)
                     )
                 })
-                addView(TextView(this@MainActivity).apply {
-                    text = if (model == null) {
-                        "모델 없음 — files/model.litertlm 필요"
-                    } else {
-                        "짧은 라벨은 그대로, 본문만 몇 초 뒤 교체"
-                    }
-                    textSize = 11f
-                    setTextColor(Color.rgb(160, 160, 168))
-                })
+                // Only the model's whereabouts, and only when it is missing — what the
+                // switch does is the section's line to say, once.
+                if (model == null) {
+                    addView(TextView(this@MainActivity).apply {
+                        text = "모델 없음 — files/model.litertlm 필요"
+                        textSize = 11f
+                        setTextColor(Color.rgb(160, 160, 168))
+                    })
+                }
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
