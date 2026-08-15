@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.widget.Button
@@ -24,6 +25,7 @@ class MainActivity : Activity() {
 
     private lateinit var status: TextView
     private lateinit var appList: LinearLayout
+    private lateinit var setupSteps: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +56,18 @@ class MainActivity : Activity() {
         }
         root.addView(status)
 
+        // The button only opens the accessibility list; the switch is two screens further
+        // in, under a label the user has no reason to recognise. Without the path spelled
+        // out, the button looks like it did nothing.
+        setupSteps = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, 24)
+            addView(step(1, "아래 버튼으로 접근성 설정 열기"))
+            addView(step(2, "설치된 앱"))
+            addView(step(3, "${getString(R.string.service_label)} › 사용 켜기"))
+        }
+        root.addView(setupSteps)
+
         root.addView(Button(this).apply {
             text = "접근성 설정 열기"
             setOnClickListener {
@@ -64,13 +78,15 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ))
 
+        root.addView(divider())
+        root.addView(sectionLabel("번역 품질"))
+        root.addView(sectionNote("긴 문장은 온디바이스 LLM 이 한 번 더 번역합니다."))
         root.addView(llmRow())
 
         // Rebuilt in onResume rather than filled once: the scout adds rows while the
         // user is off in another app, and coming back here is when they would look.
         appList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 56, 0, 0)
         }
         root.addView(appList)
 
@@ -103,6 +119,8 @@ class MainActivity : Activity() {
         val on = isServiceEnabled()
         status.text = if (on) "● 켜짐 — 번역이 동작합니다" else "○ 꺼짐 — 접근성 설정에서 켜주세요"
         status.setTextColor(if (on) Color.rgb(20, 130, 70) else Color.rgb(190, 60, 60))
+        // Setup instructions are for people who have not done the setup.
+        setupSteps.visibility = if (on) View.GONE else View.VISIBLE
         buildAppList()
     }
 
@@ -114,13 +132,9 @@ class MainActivity : Activity() {
     private fun buildAppList() {
         appList.removeAllViews()
 
+        appList.addView(divider())
         appList.addView(sectionLabel("앱별 번역"))
-        appList.addView(TextView(this).apply {
-            text = "켜 둔 앱의 화면에만 번역을 겹쳐 표시합니다."
-            textSize = 13f
-            setTextColor(Color.rgb(140, 140, 148))
-            setPadding(0, 0, 0, 16)
-        })
+        appList.addView(sectionNote("켜 둔 앱의 화면에만 번역을 겹쳐 표시합니다."))
 
         val known = TargetApps.known().sortedWith(
             compareBy({ it !in TargetApps.BUILT_IN }, { it }),
@@ -190,7 +204,7 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 40, 0, 0)
+            setPadding(0, 16, 0, 16)
         }
 
         row.addView(
@@ -230,6 +244,47 @@ class MainActivity : Activity() {
         textSize = 16f
         setTextColor(Color.rgb(24, 24, 28))
         setPadding(0, 0, 0, 8)
+    }
+
+    /** One numbered line of the setup path. The number is a column so the text lines up. */
+    private fun step(n: Int, text: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        setPadding(0, 4, 0, 4)
+        addView(TextView(this@MainActivity).apply {
+            this.text = "$n"
+            textSize = 13f
+            setTextColor(Color.rgb(150, 150, 158))
+            width = 44
+        })
+        addView(TextView(this@MainActivity).apply {
+            this.text = text
+            textSize = 13f
+            setTextColor(Color.rgb(90, 90, 96))
+        })
+    }
+
+    /** The grey line under a section label. Same voice as [sectionLabel], one size down. */
+    private fun sectionNote(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 13f
+        setTextColor(Color.rgb(140, 140, 148))
+        setPadding(0, 0, 0, 16)
+    }
+
+    /**
+     * A rule above each section heading. Spacing alone was not enough to tell the LLM
+     * switch apart from the app list below it — the two read as one list of switches,
+     * and turning translation off for an app looks like it belongs with the LLM setting.
+     */
+    private fun divider() = View(this).apply {
+        setBackgroundColor(Color.rgb(228, 228, 234))
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            2,
+        ).apply {
+            topMargin = 56
+            bottomMargin = 28
+        }
     }
 
     private fun isInstalled(pkg: String): Boolean = try {
