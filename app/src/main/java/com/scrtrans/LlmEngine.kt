@@ -50,15 +50,17 @@ class LlmEngine(
         private const val IDLE_MS = 30_000L
 
         /**
-         * Below this, the string is a label rather than body text. Sentences are where
-         * the LLM was better on real screens; labels are where it was worse.
+         * Below this, the string is a label rather than body text. Counted in Japanese
+         * characters, which carry far more than their number suggests — six of them is
+         * already a sentence.
          *
-         * Twelve rather than something rounder because of 本日の空席状況：◯ 空席あり — a
-         * sentence at fourteen characters that ML Kit turns into "오늘날의 공석 : 빈 자리가
-         * 있습니다". Not a measured figure: what it should really be depends on the cost
-         * per string on the device, which is still unmeasured.
+         * Six because that is where the 〜たい menu lines start, and they are the worst of
+         * the ja->en->ko detour: 体の歪みをとりたい came back as "나는 시체 왜곡을하고 싶다",
+         * 眼精疲労を解消したい as "나는 눈 증거 피로를 제거하고 싶다". Twelve, chosen earlier
+         * off a single example, missed the whole category. Against that, it sends 81% of
+         * what reaches the engine to the LLM rather than 54%.
          */
-        private const val MIN_CHARS = 12
+        private const val MIN_CHARS = 6
 
         /** Enough to hold the longest review line and its answer. */
         private const val MAX_TOKENS = 1024
