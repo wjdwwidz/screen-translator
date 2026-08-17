@@ -13,3 +13,4 @@ build/
 spec.md
 __pycache__/
 *.pyc
+CLAUDE.md

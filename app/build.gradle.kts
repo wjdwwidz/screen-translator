@@ -75,4 +75,9 @@ kotlin {
 dependencies {
     // The only dependency. On-device ja->ko.
     implementation("com.google.mlkit:translate:17.0.3")
+
+    // Probe only: measuring whether an on-device LLM is worth adding beside the engine.
+    // Same runtime Edge Gallery loads, so its numbers and ours are comparable.
+    // Remove with GemmaProbe if the answer is no.
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
 }

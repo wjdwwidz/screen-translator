@@ -20,6 +20,17 @@
         android:supportsRtl="false"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
+        <!--
+          The LLM's GPU backend reaches OpenCL through dlopen. libOpenCL.so is a vendor
+          public library, and from API 31 those have to be named here or the load fails
+          with "Can not find OpenCL library on this device" even where the file exists.
+          Not required: a device without it falls back to the CPU backend, and one
+          without the model never loads the runtime at all.
+        -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
